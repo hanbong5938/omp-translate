@@ -40,13 +40,12 @@ omp plugin list
 
 ### Hosted repository
 
-Publishing the repository on GitHub does **not** make it discoverable automatically. Users have to add the marketplace first:
+The plugin is published at [hanbong5938/omp-translate](https://github.com/hanbong5938/omp-translate). It is not listed in any default catalog, so add the repository as a marketplace, then install:
 
 ```sh
-omp plugin marketplace add <owner>/<repo>
+omp plugin marketplace add hanbong5938/omp-translate
+omp plugin install omp-translate@omp-translate
 ```
-
-`<owner>/<repo>` is a placeholder. Replace it with the real repository once the project is hosted (no hosted repository exists yet). Then run the `discover`/`install` commands shown above.
 
 ## First run
 

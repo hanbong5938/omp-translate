@@ -40,13 +40,12 @@ omp plugin list
 
 ### 호스팅된 저장소
 
-저장소를 GitHub에 공개한다고 해서 자동으로 검색되는 것은 **아닙니다**. 사용자는 먼저 마켓플레이스를 추가해야 합니다:
+플러그인은 [hanbong5938/omp-translate](https://github.com/hanbong5938/omp-translate)에 공개되어 있습니다. 기본 카탈로그에는 등록되어 있지 않으므로 저장소를 마켓플레이스로 추가한 뒤 설치하세요:
 
 ```sh
-omp plugin marketplace add <owner>/<repo>
+omp plugin marketplace add hanbong5938/omp-translate
+omp plugin install omp-translate@omp-translate
 ```
-
-`<owner>/<repo>`는 자리 표시자입니다. 프로젝트가 호스팅되면 실제 저장소로 바꾸세요(아직 호스팅된 저장소는 없습니다). 그런 다음 위의 `discover`/`install` 명령을 실행하세요.
 
 ## 첫 실행
 

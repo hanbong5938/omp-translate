@@ -40,13 +40,12 @@ omp plugin list
 
 ### 托管仓库
 
-在 GitHub 上发布仓库**不会**使其自动可被发现。用户必须先添加市场：
+插件发布于 [hanbong5938/omp-translate](https://github.com/hanbong5938/omp-translate)。它未列入任何默认目录，因此请先将仓库添加为市场，然后安装：
 
 ```sh
-omp plugin marketplace add <owner>/<repo>
+omp plugin marketplace add hanbong5938/omp-translate
+omp plugin install omp-translate@omp-translate
 ```
-
-`<owner>/<repo>` 是占位符。项目托管后请将其替换为实际仓库（目前尚无托管仓库）。然后运行上面所示的 `discover`/`install` 命令。
 
 ## 首次运行
 

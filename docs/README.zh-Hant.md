@@ -40,13 +40,12 @@ omp plugin list
 
 ### 託管儲存庫
 
-將儲存庫發布到 GitHub **並不會**讓它自動被發現。使用者必須先新增市集：
+外掛發布於 [hanbong5938/omp-translate](https://github.com/hanbong5938/omp-translate)。它未列於任何預設目錄，因此請先將儲存庫新增為市集，然後安裝：
 
 ```sh
-omp plugin marketplace add <owner>/<repo>
+omp plugin marketplace add hanbong5938/omp-translate
+omp plugin install omp-translate@omp-translate
 ```
-
-`<owner>/<repo>` 是預留位置。專案託管後，請將其替換為實際的儲存庫（目前尚無託管儲存庫）。接著執行上方所示的 `discover`/`install` 指令。
 
 ## 首次執行
 

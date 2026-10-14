@@ -40,13 +40,12 @@ omp plugin list
 
 ### Dépôt hébergé
 
-Publier le dépôt sur GitHub ne le rend **pas** automatiquement découvrable. Les utilisateurs doivent d'abord ajouter la marketplace :
+Le plugin est publié sur [hanbong5938/omp-translate](https://github.com/hanbong5938/omp-translate). Il n'apparaît dans aucun catalogue par défaut : ajoutez le dépôt comme marketplace, puis installez-le :
 
 ```sh
-omp plugin marketplace add <owner>/<repo>
+omp plugin marketplace add hanbong5938/omp-translate
+omp plugin install omp-translate@omp-translate
 ```
-
-`<owner>/<repo>` est un espace réservé. Remplacez-le par le vrai dépôt une fois le projet hébergé (aucun dépôt hébergé n'existe encore). Exécutez ensuite les commandes `discover`/`install` indiquées ci-dessus.
 
 ## Premier lancement
 
