@@ -92,6 +92,171 @@ describe("protectCode", () => {
 		expect(protectedUnmatched.text).toBe(unmatched);
 	});
 
+	/** Protects with an uppercase-safe nonce, "translates" by uppercasing, and restores. */
+	function uppercaseRoundTrip(source: string): { count: number; text: string; restored: string } {
+		const protectedText = protectCode(source, "TESTNONCE");
+		return {
+			count: protectedText.count,
+			text: protectedText.text,
+			restored: protectedText.restore(protectedText.text.toUpperCase()),
+		};
+	}
+
+	test("protects a tilde fence inside a block quote, prefixes included", () => {
+		const source = '> ~~~js\n> const message = "Hola";\n> ~~~\nprose';
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).not.toContain("message");
+		expect(result.text).not.toContain(">");
+		expect(result.restored).toBe('> ~~~js\n> const message = "Hola";\n> ~~~\nPROSE');
+	});
+
+	test.each([
+		["direct list fence", "- ~~~\n  code\n  ~~~\nafter", "- ~~~\n  code\n  ~~~\nAFTER"],
+		["list continuation fence", "- item\n\n  ~~~\n  code\n  ~~~", "- ITEM\n\n  ~~~\n  code\n  ~~~"],
+		["ordered list fence", "1. ~~~sh\n   echo hola\n   ~~~\n2. done", "1. ~~~sh\n   echo hola\n   ~~~\n2. DONE"],
+		[
+			"fence in a list inside a quote",
+			"> - item\n>\n>   ```\n>   code\n>   ```\n> outro",
+			"> - ITEM\n>\n>   ```\n>   code\n>   ```\n> OUTRO",
+		],
+		["fence in a nested list", "- outer\n  - ~~~\n    code\n    ~~~", "- OUTER\n  - ~~~\n    code\n    ~~~"],
+		["quote inside a list", "- note\n  > ```\n  > code\n  > ```", "- NOTE\n  > ```\n  > code\n  > ```"],
+	])("keeps a %s verbatim", (_name, source, expected) => {
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).not.toContain("code");
+		expect(result.restored).toBe(expected);
+	});
+
+	test.each([
+		["quote", "> ~~~\n> code\n\nplain prose", "> ~~~\n> code\n\nPLAIN PROSE"],
+		["list", "- ~~~\n  code\n\nplain prose", "- ~~~\n  code\n\nPLAIN PROSE"],
+	])("an unclosed %s fence ends with its container so outside prose is translated", (_name, source, expected) => {
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).toContain("plain prose");
+		expect(result.restored).toBe(expected);
+	});
+
+	test("a top-level unclosed fence still runs to the end", () => {
+		const source = "Intro\n```\nstill code `x`\nmore";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.restored).toBe("INTRO\n```\nstill code `x`\nmore");
+	});
+
+	test("escaped backticks open no code span and stay translatable", () => {
+		const source = "Di \\`hola\\` ahora";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(0);
+		expect(result.text).toBe(source);
+		expect(result.restored).toBe("DI \\`HOLA\\` AHORA");
+	});
+
+	test("a backtick after an even number of backslashes opens a real span", () => {
+		const source = "ruta \\\\`C:\\x` fin";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).not.toContain("C:");
+		expect(result.restored).toBe("RUTA \\\\`C:\\x` FIN");
+	});
+
+	test("the backtick left after an escaped double run opens a span", () => {
+		const source = "usa \\``npm ci` ya";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).toBe("usa \\`@@OMPT_TESTNONCE_0@@ ya");
+		expect(result.restored).toBe("USA \\``npm ci` YA");
+	});
+
+	test("a backslash inside code does not escape the closing backtick", () => {
+		const source = "abre `C:\\dir\\` luego";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).toBe("abre @@OMPT_TESTNONCE_0@@ luego");
+		expect(result.restored).toBe("ABRE `C:\\dir\\` LUEGO");
+	});
+
+	test("round-trips a nested CRLF fence", () => {
+		const source = "> - ```js\r\n>   let a = 1;\r\n>   ```\r\nprose\r\n";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).toBe("@@OMPT_TESTNONCE_0@@\nprose\r\n");
+		expect(result.restored).toBe("> - ```js\r\n>   let a = 1;\r\n>   ```\r\nPROSE\r\n");
+	});
+
+	test("maps offsets past a leading BOM", () => {
+		const inline = "\uFEFFUsa `npm test` ahora";
+		const inlineResult = uppercaseRoundTrip(inline);
+		expect(inlineResult.count).toBe(1);
+		expect(inlineResult.text).toBe("\uFEFFUsa @@OMPT_TESTNONCE_0@@ ahora");
+		expect(inlineResult.restored).toBe("\uFEFFUSA `npm test` AHORA");
+
+		const fence = "\uFEFF```\ncode\n```\nfin";
+		const fenceResult = uppercaseRoundTrip(fence);
+		expect(fenceResult.count).toBe(1);
+		expect(fenceResult.text).toBe("\uFEFF@@OMPT_TESTNONCE_0@@\nfin");
+		expect(fenceResult.restored).toBe("\uFEFF```\ncode\n```\nFIN");
+	});
+
+	test("round-trips inline code around Korean and emoji", () => {
+		const source = "`ls` 실행 후 🎉 `pwd` 확인 done";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(2);
+		expect(result.text).toBe("@@OMPT_TESTNONCE_0@@ 실행 후 🎉 @@OMPT_TESTNONCE_1@@ 확인 done");
+		expect(result.restored).toBe("`ls` 실행 후 🎉 `pwd` 확인 DONE");
+	});
+
+	test("keeps a tab inside inline code", () => {
+		const source = "Text: `a\tb` end";
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).toBe("Text: @@OMPT_TESTNONCE_0@@ end");
+		expect(result.restored).toBe("TEXT: `a\tb` END");
+	});
+
+	test("CR-only fence after inline code does not duplicate the prose prefix", () => {
+		const source = "before `x`\r~~~\rcode\r~~~";
+		expect(protectCode(source, "TESTNONCE").restore(protectCode(source, "TESTNONCE").text)).toBe(source);
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(2);
+		expect(result.text).not.toContain("code");
+		expect(result.restored).toBe("BEFORE `x`\r~~~\rcode\r~~~");
+	});
+
+	test("mixed CR, LF and CRLF newlines around a fence are preserved", () => {
+		const source = "intro\r~~~\ncode\r\n~~~\routro";
+		const protectedText = protectCode(source, "TESTNONCE");
+		expect(protectedText.restore(protectedText.text)).toBe(source);
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).not.toContain("code");
+		expect(result.restored).toBe("INTRO\r~~~\ncode\r\n~~~\rOUTRO");
+	});
+
+	test.each([
+		["two BOMs before a fence", "\uFEFF\uFEFFIntro\n~~~\ncode\n~~~\nfin", "\uFEFF\uFEFFINTRO\n~~~\ncode\n~~~\nFIN", "code"],
+		["two BOMs before inline code", "\uFEFF\uFEFFUsa `npm test` ahora", "\uFEFF\uFEFFUSA `npm test` AHORA", "npm test"],
+		["three BOMs before inline code", "\uFEFF\uFEFF\uFEFFUsa `npm test` ahora", "\uFEFF\uFEFF\uFEFFUSA `npm test` AHORA", "npm test"],
+	])("%s keeps every BOM and protects the code", (_name, source, expected, code) => {
+		const protectedText = protectCode(source, "TESTNONCE");
+		expect(protectedText.restore(protectedText.text)).toBe(source);
+		const result = uppercaseRoundTrip(source);
+		expect(result.count).toBe(1);
+		expect(result.text).not.toContain(code);
+		expect(result.restored).toBe(expected);
+	});
+
+	test.each([
+		["empty", ""],
+		["BOM-only", "\uFEFF"],
+	])("%s source has no spans and restores identically", (_name, source) => {
+		const protectedText = protectCode(source, "TESTNONCE");
+		expect(protectedText.count).toBe(0);
+		expect(protectedText.restore(protectedText.text)).toBe(source);
+	});
+
 	test("restore rejects missing, duplicated, unknown, and altered markers", () => {
 		const protectedText = protectCode("a `x` b `y`", "Q7");
 		expect(protectedText.count).toBe(2);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { withFileLock } from "@oh-my-pi/pi-utils";
 
 export type Zod = ExtensionAPI["zod"];
 
@@ -118,15 +119,17 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-async function atomicWriteFile(filePath: string, data: string): Promise<void> {
+export type AtomicWriteIO = Pick<typeof fs, "mkdir" | "writeFile" | "rename" | "unlink">;
+
+export async function atomicWriteFile(filePath: string, data: string, io: AtomicWriteIO = fs): Promise<void> {
 	const dir = path.dirname(filePath);
-	await fs.mkdir(dir, { recursive: true });
+	await io.mkdir(dir, { recursive: true });
 	const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
 	try {
-		await fs.writeFile(tempPath, data, "utf8");
-		await fs.rename(tempPath, filePath);
+		await io.writeFile(tempPath, data, "utf8");
+		await io.rename(tempPath, filePath);
 	} catch (error) {
-		await fs.unlink(tempPath).catch(() => undefined);
+		await io.unlink(tempPath).catch(() => undefined);
 		throw error;
 	}
 }
@@ -160,7 +163,7 @@ export class SettingsStore {
 		return this.#settings;
 	}
 
-	/** Message from the last failed load(), else undefined. */
+	/** Message from the last failed load() or from an invalid file found by update(), else undefined. */
 	get error(): string | undefined {
 		return this.#error;
 	}
@@ -170,7 +173,7 @@ export class SettingsStore {
 		return this.#enqueue(() => this.#load());
 	}
 
-	/** Merge patch, validate (schema + language tags canonicalized), write JSON (2-space, trailing newline), THEN swap in-memory settings and return the copy. Throws (leaving settings untouched) on invalid patch, write failure, or when the store is unloaded/invalid. Calls are serialized. */
+	/** Under the cross-process lock on the settings path, re-read the latest file, overlay the patch's defined fields, validate (schema + language tags canonicalized), write JSON (2-space, trailing newline), THEN swap in-memory settings and return the copy. Throws (leaving settings untouched) on invalid patch, write failure, lock timeout, or when the store is unloaded/invalid; a settings file found invalid under the lock is preserved and disables the store until load() succeeds. Calls are serialized. */
 	update(patch: Partial<TranslationSettings>): Promise<TranslationSettings> {
 		return this.#enqueue(() => this.#update(patch));
 	}
@@ -182,31 +185,42 @@ export class SettingsStore {
 	}
 
 	async #load(): Promise<SettingsLoadResult> {
+		const result = await this.#read();
+		if (result.status === "invalid") return this.#fail(result.error);
+		this.#settings = Object.freeze({ ...result.settings });
+		this.#error = undefined;
+		return result;
+	}
+
+	/** Reads and validates the file without touching the store state. */
+	async #read(): Promise<SettingsLoadResult> {
 		let raw: string;
 		try {
 			raw = await fs.readFile(this.path, "utf8");
 		} catch (error) {
 			if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-				const settings: TranslationSettings = { ...DEFAULT_SETTINGS };
-				this.#settings = Object.freeze({ ...settings });
-				this.#error = undefined;
-				return { status: "missing", settings };
+				return { status: "missing", settings: { ...DEFAULT_SETTINGS } };
 			}
-			return this.#fail(`Could not read translation settings file ${this.path}: ${errorMessage(error)}`);
+			return {
+				status: "invalid",
+				error: `Could not read translation settings file ${this.path}: ${errorMessage(error)}`,
+			};
 		}
 
 		let json: unknown;
 		try {
 			json = JSON.parse(raw);
 		} catch (error) {
-			return this.#fail(`Translation settings file ${this.path} is not valid JSON: ${errorMessage(error)}`);
+			return {
+				status: "invalid",
+				error: `Translation settings file ${this.path} is not valid JSON: ${errorMessage(error)}`,
+			};
 		}
 
 		const result = validateSettings(this.#schema, json);
-		if (!result.ok) return this.#fail(`Invalid translation settings file ${this.path}: ${result.reason}`);
-
-		this.#settings = Object.freeze({ ...result.settings });
-		this.#error = undefined;
+		if (!result.ok) {
+			return { status: "invalid", error: `Invalid translation settings file ${this.path}: ${result.reason}` };
+		}
 		return { status: "loaded", settings: result.settings };
 	}
 
@@ -217,25 +231,33 @@ export class SettingsStore {
 	}
 
 	async #update(patch: Partial<TranslationSettings>): Promise<TranslationSettings> {
-		const current = this.#settings;
-		if (current === undefined) {
+		if (this.#settings === undefined) {
 			if (this.#error !== undefined) {
 				throw new Error(`${this.#error}. Fix or delete the file at ${this.path}, then try again.`);
 			}
 			throw new Error(`Translation settings are not loaded yet (${this.path}).`);
 		}
 
-		const merged: Record<string, unknown> = { ...current };
-		for (const [key, value] of Object.entries(patch)) {
-			if (value !== undefined) merged[key] = value;
-		}
-		const result = validateSettings(this.#schema, merged);
-		if (!result.ok) throw new Error(`Invalid translation settings: ${result.reason}`);
+		await fs.mkdir(path.dirname(this.path), { recursive: true });
+		return withFileLock(this.path, async () => {
+			const latest = await this.#read();
+			if (latest.status === "invalid") {
+				this.#fail(latest.error);
+				throw new Error(`${latest.error}. Fix or delete the file at ${this.path}, then try again.`);
+			}
 
-		const next = result.settings;
-		await this.#writeFile(this.path, `${JSON.stringify(next, null, 2)}\n`);
-		this.#settings = Object.freeze({ ...next });
-		this.#error = undefined;
-		return next;
+			const merged: Record<string, unknown> = { ...latest.settings };
+			for (const [key, value] of Object.entries(patch)) {
+				if (value !== undefined) merged[key] = value;
+			}
+			const result = validateSettings(this.#schema, merged);
+			if (!result.ok) throw new Error(`Invalid translation settings: ${result.reason}`);
+
+			const next = result.settings;
+			await this.#writeFile(this.path, `${JSON.stringify(next, null, 2)}\n`);
+			this.#settings = Object.freeze({ ...next });
+			this.#error = undefined;
+			return next;
+		});
 	}
 }

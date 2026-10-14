@@ -1,5 +1,6 @@
 import type { Api, ApiKey, Model, TextContent } from "@oh-my-pi/pi-ai";
 import { completeSimple } from "@oh-my-pi/pi-ai";
+import { fromMarkdown, type MarkdownNode } from "./markdown-parser.js";
 
 export const TRANSLATION_TIMEOUT_MS = 20_000;
 /** Start delay of each unique-text thinking request; streaming text left unchanged this long is translated. */
@@ -73,70 +74,49 @@ interface Span {
 	end: number;
 }
 
-const OPEN_FENCE = /^ {0,3}(`{3,}|~{3,})([\s\S]*)$/;
-const CLOSE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t\r]*$/;
+const CODE_LOCATION_ERROR = "Could not locate Markdown code in source";
 
-/** CommonMark-style fenced code blocks; each block (fence lines and info string included) is one span. Unclosed fences run to the end. */
-function findFences(source: string): Span[] {
+/**
+ * Fenced code blocks and inline code spans located by the bundled CommonMark parser, in document order.
+ * A fenced block's span starts at its physical line start (so container prefixes on the opening line stay
+ * verbatim) and ends at the parser's end offset plus a following CR; indented code is not protected.
+ */
+function findCodeSpans(source: string): Span[] {
+	// The bundled parser consumes exactly one leading BOM, so base is added to its offsets to map back to source.
+	const base = source.startsWith("\uFEFF") ? 1 : 0;
 	const spans: Span[] = [];
-	let open: { start: number; char: string; length: number } | undefined;
-	let lineStart = 0;
-	while (lineStart <= source.length) {
-		const newline = source.indexOf("\n", lineStart);
-		const lineEnd = newline === -1 ? source.length : newline;
-		const line = source.slice(lineStart, lineEnd);
-		if (open) {
-			const close = CLOSE_FENCE.exec(line);
-			const run = close?.[1];
-			if (run && run[0] === open.char && run.length >= open.length) {
-				spans.push({ start: open.start, end: lineEnd });
-				open = undefined;
-			}
-		} else {
-			const fence = OPEN_FENCE.exec(line);
-			const run = fence?.[1];
-			const info = fence?.[2] ?? "";
-			// A backtick fence's info string cannot contain backticks (CommonMark).
-			if (run && !(run[0] === "`" && info.includes("`"))) {
-				open = { start: lineStart, char: run[0] ?? "`", length: run.length };
-			}
-		}
-		if (newline === -1) break;
-		lineStart = newline + 1;
-	}
-	if (open) spans.push({ start: open.start, end: source.length });
-	return spans;
-}
-
-/** Inline code spans in [from, to): a backtick run of length n closed by the next run of exactly n; unmatched runs stay literal. */
-function findInlineCode(source: string, from: number, to: number, spans: Span[]): void {
-	const runEnd = (at: number): number => {
-		let end = at;
-		while (end < to && source[end] === "`") end++;
-		return end;
+	const stack: MarkdownNode[] = [fromMarkdown(source)];
+	const locate = (node: MarkdownNode): Span => {
+		const start = node.position?.start.offset;
+		const end = node.position?.end.offset;
+		if (start === undefined || end === undefined) throw new Error(CODE_LOCATION_ERROR);
+		const span = { start: start + base, end: end + base };
+		if (span.start < base || span.start > span.end || span.end > source.length) throw new Error(CODE_LOCATION_ERROR);
+		return span;
 	};
-	let i = from;
-	while (i < to) {
-		const open = source.indexOf("`", i);
-		if (open === -1 || open >= to) return;
-		const openEnd = runEnd(open);
-		const length = openEnd - open;
-		let search = openEnd;
-		let closed = false;
-		while (search < to) {
-			const close = source.indexOf("`", search);
-			if (close === -1 || close >= to) break;
-			const closeEnd = runEnd(close);
-			if (closeEnd - close === length) {
-				spans.push({ start: open, end: closeEnd });
-				i = closeEnd;
-				closed = true;
-				break;
+	for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+		if (node.type === "inlineCode") {
+			spans.push(locate(node));
+		} else if (node.type === "code") {
+			const span = locate(node);
+			const marker = source[span.start];
+			if (marker === "`" || marker === "~") {
+				span.start = Math.max(
+					base,
+					source.lastIndexOf("\n", span.start - 1) + 1,
+					source.lastIndexOf("\r", span.start - 1) + 1,
+				);
+				if (source[span.end] === "\r") span.end++;
+				spans.push(span);
 			}
-			search = closeEnd;
+		} else if (node.children) {
+			for (let i = node.children.length - 1; i >= 0; i--) {
+				const child = node.children[i];
+				if (child) stack.push(child);
+			}
 		}
-		if (!closed) i = openEnd;
 	}
+	return spans;
 }
 
 function randomNonce(): string {
@@ -155,19 +135,11 @@ export function protectCode(source: string, nonce?: string): ProtectedText {
 	let id = nonce ?? randomNonce();
 	while (source.includes(id)) id = randomNonce();
 
-	const fences = findFences(source);
-	const spans: Span[] = [];
-	let cursor = 0;
-	for (const fence of fences) {
-		findInlineCode(source, cursor, fence.start, spans);
-		spans.push(fence);
-		cursor = fence.end;
-	}
-	findInlineCode(source, cursor, source.length, spans);
+	const spans = findCodeSpans(source);
 
 	const originals: string[] = [];
 	let text = "";
-	cursor = 0;
+	let cursor = 0;
 	for (const span of spans) {
 		text += source.slice(cursor, span.start);
 		text += `${MARKER_PREFIX}${id}_${originals.length}${MARKER_SUFFIX}`;

@@ -1,6 +1,6 @@
 {
   "name": "omp-translate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Translate OMP thinking and outgoing prompts using your configured models.",
   "type": "module",
   "keywords": [
@@ -21,13 +21,16 @@
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:parser": "bun build scripts/markdown-parser-entry.ts --target=bun --format=esm --outfile=src/markdown-parser.js"
   },
   "devDependencies": {
     "@oh-my-pi/pi-ai": "18.10.4",
     "@oh-my-pi/pi-coding-agent": "18.10.4",
     "@oh-my-pi/pi-tui": "18.10.4",
+    "@oh-my-pi/pi-utils": "18.10.4",
     "@types/bun": "^1.4.3",
+    "mdast-util-from-markdown": "2.1.0",
     "typescript": "^7.0.2"
   }
 }

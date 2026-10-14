@@ -233,6 +233,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 				try {
 					await store.update({ targetLanguage: tag });
 				} catch (error) {
+					if (store.settings === undefined) resetTranslations();
 					ctx.ui.notify(`omp-translate: could not save settings: ${errorMessage(error)}`, "error");
 					return;
 				}
@@ -307,6 +308,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			try {
 				await store.update(patch);
 			} catch (error) {
+				if (store.settings === undefined) resetTranslations();
 				ctx.ui.notify(`omp-translate: could not save settings: ${errorMessage(error)}`, "error");
 				return;
 			}

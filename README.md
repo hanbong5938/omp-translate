@@ -111,6 +111,8 @@ Settings are stored in `<agent dir>/omp-translate.json`. The default location is
 
 Language tags are stored in canonical form. If you edit the file by hand, missing keys fall back to their defaults. Unknown keys, wrong types, or invalid language tags make the file invalid. When the file is invalid, an error is shown, translation stays inactive, and the extension does not overwrite the file until you fix or delete it.
 
+Each settings change re-reads the file under an OS file lock and overwrites only the changed keys, so changes made from several OMP processes are merged instead of lost. If another process holds the lock for about five seconds, the change fails with an error and the previous settings stay active. Running processes do not pick up each other's changes until they reload the file.
+
 ## Behavior details
 
 ### Thinking translation
@@ -138,7 +140,7 @@ Language tags are stored in canonical form. If you edit the file by hand, missin
 ## Privacy & cost
 
 - Thinking translation sends the visible thinking text to the selected model provider. Prompt translation sends your prompts. Both use that provider's quota.
-- The only file the extension writes is the settings file. Translations are kept in memory only.
+- The only file the extension writes is the settings file (plus, on macOS and similar platforms, an empty `omp-translate.json.lock` next to it for file locking). Translations are kept in memory only.
 - Credentials are resolved by OMP's model registry. The extension does not read token stores and does not log credentials, source text, or translated text.
 
 ## Limitations
@@ -155,3 +157,5 @@ bun install
 bun test
 bun run typecheck
 ```
+
+The Markdown parser is bundled into `src/markdown-parser.js` so the extension runs without installing dependencies. After changing `mdast-util-from-markdown`, regenerate it with `bun run build:parser` and update `src/markdown-parser.LICENSE.txt`.

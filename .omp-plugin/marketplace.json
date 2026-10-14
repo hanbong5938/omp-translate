@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Translate OMP thinking and outgoing prompts using your configured models.",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "plugins": [
     {
       "name": "omp-translate",
       "description": "Translate OMP thinking and outgoing prompts using your configured models.",
       "source": "./",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "productivity",
       "keywords": [
         "omp",
