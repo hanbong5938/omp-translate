@@ -1,0 +1,25 @@
+{
+  "name": "omp-translate",
+  "owner": {
+    "name": "omp-translate maintainers"
+  },
+  "metadata": {
+    "description": "Translate OMP thinking and outgoing prompts using your configured models.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "omp-translate",
+      "description": "Translate OMP thinking and outgoing prompts using your configured models.",
+      "source": "./",
+      "version": "0.1.0",
+      "category": "productivity",
+      "keywords": [
+        "omp",
+        "extension",
+        "translation",
+        "multilingual"
+      ]
+    }
+  ]
+}
