@@ -9,6 +9,7 @@ export type Zod = ExtensionAPI["zod"];
 export interface TranslationSettings {
 	thinking: boolean;
 	request: boolean;
+	answer: boolean;
 	/** "" = not yet selected (unconfigured). */
 	targetLanguage: string;
 	requestLanguage: string;
@@ -23,6 +24,7 @@ export const DEFAULT_MODEL_SELECTOR = "@tiny";
 export const DEFAULT_SETTINGS: Readonly<TranslationSettings> = Object.freeze({
 	thinking: true,
 	request: false,
+	answer: false,
 	targetLanguage: "",
 	requestLanguage: "en",
 	model: "",
@@ -107,6 +109,7 @@ function validateSettings(schema: SettingsSchema, value: unknown): ValidationRes
 		settings: {
 			thinking: data.thinking ?? DEFAULT_SETTINGS.thinking,
 			request: data.request ?? DEFAULT_SETTINGS.request,
+			answer: data.answer ?? DEFAULT_SETTINGS.answer,
 			targetLanguage,
 			requestLanguage,
 			model: data.model ?? DEFAULT_SETTINGS.model,
@@ -149,6 +152,7 @@ export class SettingsStore {
 			.object({
 				thinking: zod.boolean().optional(),
 				request: zod.boolean().optional(),
+				answer: zod.boolean().optional(),
 				targetLanguage: zod.string().optional(),
 				requestLanguage: zod.string().optional(),
 				model: zod.string().optional(),

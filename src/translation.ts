@@ -1,8 +1,11 @@
+import type { AgentEndEvent } from "@oh-my-pi/pi-coding-agent";
 import type { Api, ApiKey, Model, TextContent } from "@oh-my-pi/pi-ai";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import { fromMarkdown, type MarkdownNode } from "./markdown-parser.js";
 
 export const TRANSLATION_TIMEOUT_MS = 20_000;
+/** Final answers are longer than thinking chunks or prompts. */
+export const ANSWER_TRANSLATION_TIMEOUT_MS = 60_000;
 /** Start delay of each unique-text thinking request; streaming text left unchanged this long is translated. */
 export const THINKING_DEBOUNCE_MS = 1_500;
 /** Completed results and failures are each bounded to this many entries, FIFO eviction. */
@@ -44,6 +47,25 @@ const TRANSLATOR_RULES = [
 
 export function buildThinkingPrompt(targetLanguage: string): string {
 	return `${TRANSLATOR_RULES}\nTarget language: ${describeLanguage(targetLanguage)}. The source is an AI agent's internal reasoning.`;
+}
+
+export function buildAnswerPrompt(targetLanguage: string): string {
+	return `${TRANSLATOR_RULES}\nTarget language: ${describeLanguage(targetLanguage)}. The source is an AI coding agent's final answer to a developer; preserve Markdown structure (headings, lists, tables, emphasis) exactly.`;
+}
+
+type AgentMessage = AgentEndEvent["messages"][number];
+
+/** Text of the last assistant message when it ended with stopReason "stop" and no tool calls; text blocks joined by blank lines, trimmed; undefined if absent or empty. */
+export function finalAnswerText(messages: readonly AgentMessage[]): string | undefined {
+	const last = messages.findLast(message => message.role === "assistant");
+	if (!last || last.role !== "assistant" || last.stopReason !== "stop") return undefined;
+	if (last.content.some(block => block.type === "toolCall")) return undefined;
+	const text = last.content
+		.filter((block): block is TextContent => block.type === "text")
+		.map(block => block.text)
+		.join("\n\n")
+		.trim();
+	return text === "" ? undefined : text;
 }
 
 export function buildRequestPrompt(requestLanguage: string): string {
@@ -228,15 +250,16 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 	});
 }
 
-/** protectCode → caller with AbortSignal.any([signal?, AbortSignal.timeout(TRANSLATION_TIMEOUT_MS)]) → restore. Rejects on caller error, timeout, abort, or marker mismatch. */
+/** protectCode → caller with AbortSignal.any([signal?, AbortSignal.timeout(timeoutMs)]) → restore. Rejects on caller error, timeout, abort, or marker mismatch. */
 export async function translateText(
 	caller: ModelCaller,
 	systemPrompt: string,
 	source: string,
 	signal?: AbortSignal,
+	timeoutMs: number = TRANSLATION_TIMEOUT_MS,
 ): Promise<string> {
 	const protectedText = protectCode(source);
-	const combined = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(TRANSLATION_TIMEOUT_MS)]);
+	const combined = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
 	combined.throwIfAborted();
 	let call: Promise<string>;
 	try {

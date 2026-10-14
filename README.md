@@ -7,6 +7,7 @@ Version 0.1.0 — a language-neutral translation extension for OMP (the oh-my-pi
 ## Overview
 
 - **Thinking translation**: each assistant thinking block is translated into a display language you choose, and the translation is shown beneath the original in the TUI. The original thinking and the provider context are never modified.
+- **Answer translation** (optional, off by default): each completed main-agent final answer gets a separate translated `omp-translate` box in the TUI. The original answer stays unchanged; the translation is excluded from future model requests while this extension is loaded.
 - **Prompt translation** (optional, off by default): outgoing prompts are translated into a request language (default English) before they are sent.
 
 Source text can be in any language, including mixed-language text. The target can be any valid BCP-47 language tag.
@@ -66,6 +67,7 @@ In the interactive TUI (main session only), a language picker appears once:
 
 - If you cancel, translation stays inactive and you are not asked again in this session. Run `/translate setup` later to choose a language.
 - Prompt translation stays off until you turn it on with `/translate request on`.
+- Answer translation stays off until you turn it on with `/translate answer on`.
 - Non-interactive modes (`print`, `json`, `rpc`) and subagents never show dialogs. In `print`/`json` modes a one-line setup instruction is written to stderr. In `rpc` mode a notification is sent instead.
 
 ## Commands
@@ -75,6 +77,7 @@ In the interactive TUI (main session only), a language picker appears once:
 | `/translate` or `/translate status` | Show current settings and status |
 | `/translate setup` | Open the language picker |
 | `/translate thinking on\|off` | Turn thinking translation on or off |
+| `/translate answer on\|off` | Turn final-answer translation on or off |
 | `/translate request on\|off` | Turn prompt translation on or off |
 | `/translate language <tag>` | Set the display language, e.g. `/translate language pt-BR` |
 | `/translate request-language <tag>` | Set the request language, e.g. `/translate request-language en` |
@@ -91,6 +94,7 @@ Settings are stored in `<agent dir>/omp-translate.json`. The default location is
 |---|---|---|
 | `thinking` | `true` | Translate thinking blocks |
 | `request` | `false` | Translate outgoing prompts |
+| `answer` | `false` | Translate completed main-agent final answers in the TUI |
 | `targetLanguage` | `""` | Display language (`""` = not configured yet) |
 | `requestLanguage` | `"en"` | Language prompts are translated into (must be non-empty) |
 | `model` | `""` | Translation model selector (`""` = default) |
@@ -100,6 +104,7 @@ Settings are stored in `<agent dir>/omp-translate.json`. The default location is
 {
   "thinking": true,
   "request": true,
+  "answer": false,
   "targetLanguage": "ja",
   "requestLanguage": "en",
   "model": "",
@@ -107,9 +112,11 @@ Settings are stored in `<agent dir>/omp-translate.json`. The default location is
 }
 ```
 
-**Model precedence** for prompt translation is `requestModel` → `model` → `@tiny`. Thinking translation uses `model` → `@tiny`. `@tiny` is OMP's tiny model role. An empty value never means a hardcoded provider.
+**Model precedence** for prompt translation is `requestModel` → `model` → `@tiny`. Thinking and answer translation use `model` → `@tiny`. `@tiny` is OMP's tiny model role. An empty value never means a hardcoded provider.
 
 Language tags are stored in canonical form. If you edit the file by hand, missing keys fall back to their defaults. Unknown keys, wrong types, or invalid language tags make the file invalid. When the file is invalid, an error is shown, translation stays inactive, and the extension does not overwrite the file until you fix or delete it.
+
+Older settings files without `answer` load with it off. The next settings update writes the key; remove it before downgrading to an older version whose strict schema does not accept it.
 
 Each settings change re-reads the file under an OS file lock and overwrites only the changed keys, so changes made from several OMP processes are merged instead of lost. If another process holds the lock for about five seconds, the change fails with an error and the previous settings stay active. Running processes do not pick up each other's changes until they reload the file.
 
@@ -122,6 +129,14 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 - Changing settings, switching or branching the session, or ending the session cancels pending work and clears translations already on screen.
 - Each translation has a 20 s deadline.
 
+### Answer translation
+
+- Only the last assistant message of a completed main-agent TUI run is translated. Continuations, tool-call turns, failed or aborted answers, empty answers, subagents, and non-interactive modes are skipped.
+- Translation uses `targetLanguage` and the thinking translation model, with a 60 s deadline. It runs in the background without starting another agent turn.
+- If a new run is active when translation finishes, the result waits for the next idle main-agent end. Switching, branching, or shutting down the session discards pending and held results.
+- Turning answer translation off drops still-pending results; already-held results can still appear at the next idle end. Existing displayed translations remain. An unchanged translation is not displayed; failures produce a warning without changing the original.
+- The host persists each translation as a separate display-only custom message and displays it again on resume. This extension filters those messages from every model request, including when answer translation is off. **Keep the extension loaded when resuming translated sessions**: without its context filter, the host can include custom messages in model requests.
+
 ### Prompt translation
 
 - Translation happens when the input is submitted. The translated text is what gets stored in session history and shown as your message.
@@ -133,22 +148,22 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 ### Code preservation
 
 - Fenced code blocks and inline code spans are replaced with placeholders before translation and restored byte-for-byte afterwards.
-- If the model drops or duplicates a placeholder, the translation is rejected. For prompts, the original text is sent. For thinking, a failure is shown.
+- If the model drops or duplicates a placeholder, the translation is rejected. For prompts, the original text is sent. For thinking, a failure is shown. For answers, a warning is shown and no translation is posted.
 - Other identifiers and paths are protected only by instructions to the model. Perfect preservation and semantic equivalence are not guaranteed.
 - The source text is wrapped in framing that tells the model to treat it as text to translate. This framing is guidance, not a security boundary.
 
 ## Privacy & cost
 
-- Thinking translation sends the visible thinking text to the selected model provider. Prompt translation sends your prompts. Both use that provider's quota.
-- The only file the extension writes is the settings file (plus, on macOS and similar platforms, an empty `omp-translate.json.lock` next to it for file locking). Translations are kept in memory only.
+- Thinking translation sends visible thinking to the selected model provider. Enabled answer translation sends final-answer text; prompt translation sends your prompts. All use that provider's quota.
+- The extension writes its settings file (plus, on macOS and similar platforms, an empty `omp-translate.json.lock` next to it for file locking). Thinking translations stay in memory; the host stores answer translations in session history as separate custom messages.
 - Credentials are resolved by OMP's model registry. The extension does not read token stores and does not log credentials, source text, or translated text.
 
 ## Limitations
 
 - The input hook applies to interactive and RPC inputs, as OMP provides them.
-- Assistant responses are not translated.
-- Thinking translations render only while thinking blocks are visible in the TUI. With `hideThinkingBlock: true` (or `--hide-thinking`), nothing is translated or shown; toggle visibility with `Ctrl+T`.
-- Translations are not persisted. After a restart, thinking is translated again.
+- Answer translation is main-agent TUI only and requires a completed final answer.
+- Thinking translations render only while thinking blocks are visible in the TUI. With `hideThinkingBlock: true` (or `--hide-thinking`), no thinking is translated or shown; toggle visibility with `Ctrl+T`. Answer translation is independent of thinking visibility.
+- Thinking translations are not persisted and are translated again after restart. Answer translations are persisted; keep the extension loaded to exclude them from model context on resume.
 
 ## Development
 

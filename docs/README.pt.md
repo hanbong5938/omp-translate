@@ -7,6 +7,7 @@ Versão 0.1.0 — uma extensão de tradução independente de idioma para o OMP 
 ## Visão geral
 
 - **Tradução do raciocínio**: cada bloco de raciocínio (thinking) do assistente é traduzido para um idioma de exibição escolhido por você, e a tradução é mostrada abaixo do original na TUI. O raciocínio original e o contexto do provedor nunca são modificados.
+- **Tradução de respostas** (opcional, desativada por padrão): na TUI, a resposta final do agente principal é traduzida para o idioma de exibição e mostrada em uma caixa `omp-translate` separada abaixo do original. A mensagem original não é modificada.
 - **Tradução de prompts** (opcional, desativada por padrão): os prompts enviados são traduzidos para um idioma de requisição (padrão: inglês) antes de serem enviados.
 
 O texto de origem pode estar em qualquer idioma, inclusive texto com idiomas misturados. O destino pode ser qualquer tag de idioma BCP-47 válida.
@@ -75,6 +76,7 @@ Na TUI interativa (somente na sessão principal), um seletor de idioma aparece u
 | `/translate` ou `/translate status` | Mostra as configurações e o status atuais |
 | `/translate setup` | Abre o seletor de idioma |
 | `/translate thinking on\|off` | Ativa ou desativa a tradução do raciocínio |
+| `/translate answer on\|off` | Ativa ou desativa a tradução de respostas |
 | `/translate request on\|off` | Ativa ou desativa a tradução de prompts |
 | `/translate language <tag>` | Define o idioma de exibição, por exemplo `/translate language pt-BR` |
 | `/translate request-language <tag>` | Define o idioma de requisição, por exemplo `/translate request-language en` |
@@ -91,6 +93,7 @@ As configurações são armazenadas em `<agent dir>/omp-translate.json`. O local
 |---|---|---|
 | `thinking` | `true` | Traduzir blocos de raciocínio |
 | `request` | `false` | Traduzir prompts enviados |
+| `answer` | `false` | Traduzir a resposta final do agente principal (TUI) |
 | `targetLanguage` | `""` | Idioma de exibição (`""` = ainda não configurado) |
 | `requestLanguage` | `"en"` | Idioma para o qual os prompts são traduzidos (não pode ser vazio) |
 | `model` | `""` | Seletor do modelo de tradução (`""` = padrão) |
@@ -100,6 +103,7 @@ As configurações são armazenadas em `<agent dir>/omp-translate.json`. O local
 {
   "thinking": true,
   "request": true,
+  "answer": false,
   "targetLanguage": "ja",
   "requestLanguage": "en",
   "model": "",
@@ -107,7 +111,7 @@ As configurações são armazenadas em `<agent dir>/omp-translate.json`. O local
 }
 ```
 
-**Precedência de modelos** para a tradução de prompts: `requestModel` → `model` → `@tiny`. A tradução do raciocínio usa `model` → `@tiny`. `@tiny` é o papel de modelo minúsculo (tiny) do OMP. Um valor vazio nunca significa um provedor fixo no código.
+**Precedência de modelos** para a tradução de prompts: `requestModel` → `model` → `@tiny`. A tradução do raciocínio e das respostas usa `model` → `@tiny` e o mesmo `targetLanguage`. `@tiny` é o papel de modelo minúsculo (tiny) do OMP. Um valor vazio nunca significa um provedor fixo no código.
 
 As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo manualmente, as chaves ausentes assumem seus valores padrão. Chaves desconhecidas, tipos incorretos ou tags de idioma inválidas tornam o arquivo inválido. Quando o arquivo é inválido, um erro é exibido, a tradução permanece inativa e a extensão não sobrescreve o arquivo até que você o corrija ou exclua.
 
@@ -119,6 +123,15 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 - Os resultados são armazenados em cache na memória (até 500 entradas). A chave do cache inclui o modelo, o idioma de destino e o texto. Visualizações que exibem texto idêntico compartilham uma única requisição.
 - Alterar as configurações, trocar ou ramificar a sessão, ou encerrar a sessão cancela o trabalho pendente e limpa as traduções já exibidas na tela.
 - Cada tradução tem um prazo de 20 s.
+
+### Tradução de respostas
+
+- Apenas respostas finais concluídas do agente principal na TUI são traduzidas. Subagentes, modos não interativos, continuações/novas tentativas e turnos com chamadas de ferramentas não são traduzidos.
+- A tradução é executada em segundo plano com prazo de 60 s e não inicia um novo turno do agente. Se terminar enquanto o agente estiver ocupado, ela é retida e exibida ao final da próxima execução do agente principal.
+- Traduções pendentes ou retidas são descartadas ao trocar ou ramificar a sessão, ou no encerramento. Um resultado idêntico ao original (já no idioma de destino) não é exibido.
+- A resposta original permanece intacta na transcrição, no arquivo de sessão e nas futuras requisições ao LLM. A tradução é uma mensagem personalizada separada (`display: true`, `customType: "omp-translate"`) que o host salva na sessão e exibe novamente ao retomá-la.
+- O plugin sempre remove essas mensagens do contexto enviado ao provedor, mesmo com `answer` desativado. Essa exclusão só funciona com o plugin carregado: não o desative ao retomar sessões com respostas traduzidas, ou o host enviará essas mensagens ao modelo.
+- Se a verificação de marcadores falhar, um aviso é exibido e a tradução dessa resposta é omitida.
 
 ### Tradução de prompts
 
@@ -137,16 +150,17 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 
 ## Privacidade e custo
 
-- A tradução do raciocínio envia o texto de raciocínio visível ao provedor do modelo selecionado. A tradução de prompts envia seus prompts. Ambas consomem a cota desse provedor.
-- O único arquivo que a extensão escreve é o arquivo de configurações. As traduções são mantidas apenas na memória.
+- A tradução do raciocínio envia o texto de raciocínio visível ao provedor do modelo selecionado. A tradução de respostas, quando ativada, envia as respostas finais. A tradução de prompts envia seus prompts. Todas consomem a cota desse provedor.
+- O único arquivo que a extensão escreve é o arquivo de configurações. As traduções do raciocínio são mantidas apenas na memória; as traduções de respostas são salvas pelo host no arquivo de sessão.
 - As credenciais são resolvidas pelo registro de modelos do OMP. A extensão não lê armazenamentos de tokens e não registra em log credenciais, texto de origem nem texto traduzido.
 
 ## Limitações
 
 - O hook de entrada se aplica às entradas interativas e RPC, conforme fornecidas pelo OMP.
-- As respostas do assistente não são traduzidas.
-- As traduções do raciocínio só são renderizadas enquanto os blocos de raciocínio estão visíveis na TUI. Com `hideThinkingBlock: true` (ou `--hide-thinking`), nada é traduzido nem exibido; alterne a visibilidade com `Ctrl+T`.
-- As traduções não são persistidas. Após uma reinicialização, o raciocínio é traduzido novamente.
+- Apenas a resposta final de cada execução do agente principal na TUI é traduzida, não o texto intermediário de turnos com ferramentas.
+- As traduções do raciocínio só são renderizadas enquanto os blocos de raciocínio estão visíveis na TUI. Com `hideThinkingBlock: true` (ou `--hide-thinking`), nenhum raciocínio é traduzido nem exibido; alterne a visibilidade com `Ctrl+T`. A tradução de respostas não depende dessa visibilidade.
+- As traduções do raciocínio não são persistidas. Após uma reinicialização, o raciocínio é traduzido novamente.
+- Versões antigas instaladas, com esquema estrito, rejeitam a chave `answer`: remova-a do arquivo de configurações antes de fazer downgrade.
 
 ## Desenvolvimento
 

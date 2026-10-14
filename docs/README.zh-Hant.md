@@ -7,6 +7,7 @@
 ## 概覽
 
 - **思考翻譯**：每個助理思考區塊都會被翻譯成您選擇的顯示語言，譯文會顯示在 TUI 中原文的下方。原始思考內容與提供者上下文永遠不會被修改。
+- **回答翻譯**（選用，預設關閉）：主代理執行結束後，其最終回答會被翻譯成顯示語言，並以獨立的 `omp-translate` 方框顯示在原文下方。原始回答在歷史記錄、工作階段檔案與後續 LLM 請求中都保持不變。
 - **提示詞翻譯**（選用，預設關閉）：送出的提示詞會在傳送前被翻譯成請求語言（預設為英文）。
 
 來源文字可以是任何語言，包括混合多種語言的文字。目標語言可以是任何有效的 BCP-47 語言標籤。
@@ -75,6 +76,7 @@ omp plugin install omp-translate@omp-translate
 | `/translate` 或 `/translate status` | 顯示目前的設定與狀態 |
 | `/translate setup` | 開啟語言選擇器 |
 | `/translate thinking on\|off` | 開啟或關閉思考翻譯 |
+| `/translate answer on\|off` | 開啟或關閉回答翻譯 |
 | `/translate request on\|off` | 開啟或關閉提示詞翻譯 |
 | `/translate language <tag>` | 設定顯示語言，例如 `/translate language pt-BR` |
 | `/translate request-language <tag>` | 設定請求語言，例如 `/translate request-language en` |
@@ -90,6 +92,7 @@ omp plugin install omp-translate@omp-translate
 | 鍵 | 預設值 | 意義 |
 |---|---|---|
 | `thinking` | `true` | 翻譯思考區塊 |
+| `answer` | `false` | 翻譯主代理的最終回答 |
 | `request` | `false` | 翻譯送出的提示詞 |
 | `targetLanguage` | `""` | 顯示語言（`""` = 尚未設定） |
 | `requestLanguage` | `"en"` | 提示詞要翻譯成的語言（不得為空） |
@@ -99,6 +102,7 @@ omp plugin install omp-translate@omp-translate
 ```json
 {
   "thinking": true,
+  "answer": false,
   "request": true,
   "targetLanguage": "ja",
   "requestLanguage": "en",
@@ -107,7 +111,7 @@ omp plugin install omp-translate@omp-translate
 }
 ```
 
-提示詞翻譯的**模型優先順序**為 `requestModel` → `model` → `@tiny`。思考翻譯使用 `model` → `@tiny`。`@tiny` 是 OMP 的 tiny 模型角色。空值永遠不代表寫死的提供者。
+提示詞翻譯的**模型優先順序**為 `requestModel` → `model` → `@tiny`。思考翻譯與回答翻譯使用 `model` → `@tiny`，並共用 `targetLanguage`。`@tiny` 是 OMP 的 tiny 模型角色。空值永遠不代表寫死的提供者。
 
 語言標籤會以正規形式儲存。若您手動編輯檔案，缺少的鍵會回退為預設值。未知的鍵、錯誤的型別或無效的語言標籤會使檔案無效。當檔案無效時，會顯示錯誤，翻譯保持停用，且在您修正或刪除檔案之前，擴充功能不會覆寫該檔案。
 
@@ -128,6 +132,15 @@ omp plugin install omp-translate@omp-translate
 - 若翻譯失敗，會顯示警告並傳送原文。
 - 若在提示詞翻譯期間切換或分支工作階段，該提示詞會被捨棄並顯示警告；請在新的工作階段中重新傳送。關閉時，待處理的提示詞會被無聲捨棄。
 
+### 回答翻譯
+
+- 以 `/translate answer on` 開啟。僅翻譯 TUI 中主代理正常完成的最終回答；子代理、非互動模式（`print`、`json`、`rpc`）、重試／接續執行，以及以工具呼叫結束的回合都不會翻譯。
+- 翻譯以非同步方式進行，不會啟動新的代理回合，期限為 60 秒。代理忙碌時完成的譯文會在下一次主代理執行結束並閒置時顯示。
+- 切換、分支或結束工作階段時，待處理與暫存的回答譯文都會被捨棄。
+- 若回答已是目標語言、結果與原文相同，則不會顯示。翻譯或預留位置驗證失敗時會顯示警告，並省略該回答的翻譯。
+- 譯文會以獨立的 `display: true` 自訂訊息（`customType` 為 `omp-translate`）由主機儲存到工作階段檔案中，因此恢復工作階段時會再次顯示。
+- 無論回答翻譯是否開啟，外掛都會一律將這些訊息從提供者上下文中排除。此排除僅在外掛已載入時生效，因此恢復含有譯文的工作階段時請勿停用外掛，否則主機會將已儲存的譯文傳送給模型。
+
 ### 程式碼保留
 
 - 圍欄程式碼區塊與行內程式碼片段會在翻譯前被替換為預留位置，並在之後逐位元組還原。
@@ -137,16 +150,17 @@ omp plugin install omp-translate@omp-translate
 
 ## 隱私與費用
 
-- 思考翻譯會將可見的思考文字傳送給所選的模型提供者。提示詞翻譯會傳送您的提示詞。兩者都會使用該提供者的配額。
-- 擴充功能唯一會寫入的檔案是設定檔。譯文僅保存在記憶體中。
+- 思考翻譯會將可見的思考文字、回答翻譯（開啟時）會將最終回答傳送給所選的模型提供者。提示詞翻譯會傳送您的提示詞。它們都會使用該提供者的配額。
+- 擴充功能唯一會直接寫入的檔案是設定檔。思考譯文僅保存在記憶體中；回答譯文由主機以自訂訊息儲存到工作階段檔案中。
 - 憑證由 OMP 的模型登錄檔解析。擴充功能不會讀取權杖儲存區，也不會記錄憑證、來源文字或譯文。
 
 ## 限制
 
 - 輸入掛鉤適用於互動式與 RPC 輸入，依 OMP 提供的方式而定。
-- 助理回應不會被翻譯。
-- 思考譯文僅在 TUI 中思考區塊可見時才會呈現。若設定 `hideThinkingBlock: true`（或 `--hide-thinking`），則不會翻譯或顯示任何內容；可用 `Ctrl+T` 切換可見性。
-- 譯文不會被持久保存。重新啟動後，思考內容會再次被翻譯。
+- 回答翻譯僅適用於 TUI 中主代理的最終回答；包含工具呼叫之回合中的中間文字不會被翻譯。
+- 思考譯文僅在 TUI 中思考區塊可見時才會呈現。若設定 `hideThinkingBlock: true`（或 `--hide-thinking`），則不會進行或顯示思考翻譯；回答翻譯與思考是否可見無關。可用 `Ctrl+T` 切換可見性。
+- 思考譯文不會被持久保存。重新啟動後，思考內容會再次被翻譯。
+- 不支援 `answer` 鍵的舊版本會因嚴格的結構描述而拒絕此設定檔。降級前請移除 `answer` 鍵。
 
 ## 開發
 

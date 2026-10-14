@@ -58,6 +58,7 @@ async function tempLeftovers(directory = dir): Promise<string[]> {
 const fullSettings: TranslationSettings = {
 	thinking: false,
 	request: true,
+	answer: true,
 	targetLanguage: "ko",
 	requestLanguage: "en",
 	model: "anthropic/claude-haiku",
@@ -73,6 +74,7 @@ describe("SettingsStore.load", () => {
 			settings: {
 				thinking: true,
 				request: false,
+				answer: false,
 				targetLanguage: "",
 				requestLanguage: "en",
 				model: "",
@@ -140,6 +142,7 @@ describe("SettingsStore.load", () => {
 		expect(result).toEqual({ status: "loaded", settings: expected });
 		expect(store.settings).toEqual(expected);
 		expect(isConfigured(expected)).toBe(true);
+		expect(store.settings?.answer).toBe(false);
 	});
 
 	test("recovers after the invalid file is fixed", async () => {

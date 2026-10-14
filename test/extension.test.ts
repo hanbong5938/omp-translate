@@ -30,6 +30,7 @@ class FakeExtensionAPI {
 	readonly handlers = new Map<string, EventHandler[]>();
 	readonly commands = new Map<string, CommandOptions>();
 	readonly thinkingRenderers: AssistantThinkingRenderer[] = [];
+	readonly sent: { message: unknown; options: unknown }[] = [];
 
 	on(event: string, handler: EventHandler): void {
 		this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
@@ -37,6 +38,10 @@ class FakeExtensionAPI {
 
 	registerCommand(name: string, options: CommandOptions): void {
 		this.commands.set(name, options);
+	}
+
+	sendMessage(message: unknown, options?: unknown): void {
+		this.sent.push({ message, options });
 	}
 
 	registerAssistantThinkingRenderer(renderer: AssistantThinkingRenderer): void {
@@ -87,10 +92,12 @@ function fakeContext(options: FakeContextOptions = {}) {
 	const selects: { title: string; items: unknown[] }[] = [];
 	const inputs: string[] = [];
 	const timers: FakeTimer[] = [];
+	let idle = true;
 	let sessionId = "session-1";
 	const ctx = {
 		mode,
 		hasUI: mode === "tui",
+		isIdle: () => idle,
 		agent: { kind, id: kind === "main" ? "Main" : "0-Task", name: kind === "main" ? "main" : "task", depth: 0 },
 		ui: {
 			select: (title: string, items: unknown[]) => {
@@ -129,6 +136,9 @@ function fakeContext(options: FakeContextOptions = {}) {
 		setSessionId(id: string): void {
 			sessionId = id;
 		},
+		setIdle(value: boolean): void {
+			idle = value;
+		},
 		nextNotification(): Promise<Notice> {
 			const { promise, resolve } = Promise.withResolvers<Notice>();
 			notificationWaiters.push(resolve);
@@ -161,6 +171,7 @@ async function writeSettings(patch: Partial<TranslationSettings>): Promise<strin
 		{
 			thinking: true,
 			request: false,
+			answer: false,
 			targetLanguage: "",
 			requestLanguage: "en",
 			model: "",
@@ -625,6 +636,342 @@ describe("/translate command", () => {
 
 		expect(complete?.("language j")).toEqual([{ value: "language ja", label: "language ja" }]);
 		expect(complete?.("zzz")).toBeNull();
+	});
+});
+
+function userMessage(text: string) {
+	return { role: "user", content: [{ type: "text", text }], timestamp: 0 };
+}
+
+function assistantMessage(content: unknown[], stopReason = "stop") {
+	return { role: "assistant", content, stopReason, timestamp: 0 };
+}
+
+interface AgentEndPayload {
+	type: "agent_end";
+	messages: unknown[];
+	willContinue?: boolean;
+}
+
+function agentEnd(messages: unknown[], willContinue?: boolean): AgentEndPayload {
+	return { type: "agent_end", messages, ...(willContinue === undefined ? {} : { willContinue }) };
+}
+
+const finalAnswer = (text: string) => [userMessage("run the build"), assistantMessage([{ type: "text", text }])];
+
+function answerPost(content: string, targetLanguage = "ja") {
+	return {
+		message: { customType: "omp-translate", content, display: true, details: { targetLanguage } },
+		options: undefined,
+	};
+}
+
+async function answerSession(patch: Partial<TranslationSettings> = {}, options: FakeContextOptions = {}) {
+	await writeSettings({ targetLanguage: "ja", answer: true, ...patch });
+	const extension = loadExtension();
+	const session = fakeContext(options);
+	await extension.pi.emit("session_start", { type: "session_start" }, session.ctx);
+	return { extension, session };
+}
+
+describe("answer translation", () => {
+	test("translates the main agent's final answer into a display-only custom message", async () => {
+		const { extension, session } = await answerSession();
+		extension.respond = () => Promise.resolve("ビルドは成功しました。");
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		await settle();
+
+		expect(extension.calls).toHaveLength(1);
+		expect(extension.calls[0]?.text).toBe("Build passed.");
+		expect(extension.calls[0]?.systemPrompt).toContain("final answer");
+		expect(extension.pi.sent).toEqual([answerPost("ビルドは成功しました。")]);
+	});
+
+	test("agent_end does not wait for the translation", async () => {
+		const { extension, session } = await answerSession();
+		const reply = Promise.withResolvers<string>();
+		extension.respond = () => reply.promise;
+
+		const result = await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		expect(result).toBeUndefined();
+		expect(extension.pi.sent).toHaveLength(0);
+
+		reply.resolve("ビルドは成功しました。");
+		await settle();
+		expect(extension.pi.sent).toEqual([answerPost("ビルドは成功しました。")]);
+	});
+
+	test("joins multiple text blocks of the last assistant message", async () => {
+		const { extension, session } = await answerSession();
+		const messages = [
+			userMessage("go"),
+			assistantMessage([{ type: "text", text: "Earlier." }]),
+			userMessage("again"),
+			assistantMessage([
+				{ type: "thinking", thinking: "hmm" },
+				{ type: "text", text: "First." },
+				{ type: "text", text: "Second." },
+			]),
+		];
+
+		await extension.pi.emit("agent_end", agentEnd(messages), session.ctx);
+		await settle();
+
+		expect(extension.calls.map(call => call.text)).toEqual(["First.\n\nSecond."]);
+	});
+
+	const skipped: [string, Partial<TranslationSettings>, FakeContextOptions, () => AgentEndPayload][] = [
+		["answer translation is off", { answer: false }, {}, () => agentEnd(finalAnswer("Build passed."))],
+		["the agent is a subagent", {}, { kind: "sub" }, () => agentEnd(finalAnswer("Build passed."))],
+		["the mode is not tui", {}, { mode: "print" }, () => agentEnd(finalAnswer("Build passed."))],
+		["the run will continue", {}, {}, () => agentEnd(finalAnswer("Build passed."), true)],
+		[
+			"the last assistant stopped for tool use",
+			{},
+			{},
+			() => agentEnd([userMessage("go"), assistantMessage([{ type: "text", text: "Checking." }], "toolUse")]),
+		],
+		[
+			"the last assistant stopped with an error",
+			{},
+			{},
+			() => agentEnd([userMessage("go"), assistantMessage([{ type: "text", text: "Partial." }], "error")]),
+		],
+		[
+			"the last assistant contains a tool call",
+			{},
+			{},
+			() =>
+				agentEnd([
+					userMessage("go"),
+					assistantMessage([
+						{ type: "text", text: "Running." },
+						{ type: "toolCall", id: "1", name: "bash", arguments: {} },
+					]),
+				]),
+		],
+		[
+			"the answer text is empty",
+			{},
+			{},
+			() => agentEnd([userMessage("go"), assistantMessage([{ type: "text", text: "   " }])]),
+		],
+		["there is no assistant message", {}, {}, () => agentEnd([userMessage("go")])],
+		["no target language is configured", { targetLanguage: "" }, {}, () => agentEnd(finalAnswer("Build passed."))],
+	];
+	for (const [name, patch, options, event] of skipped) {
+		test(`skips translation when ${name}`, async () => {
+			const { extension, session } = await answerSession(patch, options);
+
+			await extension.pi.emit("agent_end", event(), session.ctx);
+			await settle();
+
+			expect(extension.calls).toHaveLength(0);
+			expect(extension.pi.sent).toHaveLength(0);
+		});
+	}
+
+	test("warns and skips when the translation model cannot be resolved", async () => {
+		const { extension, session } = await answerSession({ model: "nope" });
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		await settle();
+
+		expect(extension.calls).toHaveLength(0);
+		expect(extension.pi.sent).toHaveLength(0);
+		expect(session.notifications.at(-1)?.type).toBe("warning");
+		expect(session.notifications.at(-1)?.message).toContain("nope");
+	});
+
+	test("posts nothing when the model returns the answer unchanged", async () => {
+		const { extension, session } = await answerSession();
+		extension.respond = call => Promise.resolve(`  ${call.text}\n`);
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		await settle();
+
+		expect(extension.calls).toHaveLength(1);
+		expect(extension.pi.sent).toHaveLength(0);
+	});
+
+	test("holds a translation finished while busy and posts it at the next main agent_end", async () => {
+		const { extension, session } = await answerSession();
+		const reply = Promise.withResolvers<string>();
+		extension.respond = () => reply.promise;
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		session.setIdle(false);
+		reply.resolve("ビルドは成功しました。");
+		await settle();
+		expect(extension.pi.sent).toHaveLength(0);
+
+		// A subagent finishing must not flush the main session's held answer.
+		const sub = fakeContext({ kind: "sub" });
+		await extension.pi.emit("agent_end", agentEnd([]), sub.ctx);
+		expect(extension.pi.sent).toHaveLength(0);
+
+		// Toggling off does not discard an already finished translation; the next main run flushes it.
+		await extension.pi.command().handler("answer off", session.ctx);
+		session.setIdle(true);
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Second answer.")), session.ctx);
+		await settle();
+
+		expect(extension.pi.sent).toEqual([answerPost("ビルドは成功しました。")]);
+		expect(extension.calls).toHaveLength(1);
+	});
+
+	test("does not flush held translations while still busy", async () => {
+		const { extension, session } = await answerSession();
+		extension.respond = () => Promise.resolve("最初の回答。");
+
+		session.setIdle(false);
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("First answer.")), session.ctx);
+		await settle();
+		await extension.pi.emit("agent_end", agentEnd([], true), session.ctx);
+		expect(extension.pi.sent).toHaveLength(0);
+
+		session.setIdle(true);
+		extension.respond = () => Promise.resolve("二番目の回答。");
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Second answer.")), session.ctx);
+		await settle();
+
+		// The held answer is posted before the newer one.
+		expect(extension.pi.sent).toEqual([answerPost("最初の回答。"), answerPost("二番目の回答。")]);
+	});
+
+	test("drops a translation that resolves after toggling answer off", async () => {
+		const { extension, session } = await answerSession();
+		const reply = Promise.withResolvers<string>();
+		extension.respond = () => reply.promise;
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		await extension.pi.command().handler("answer off", session.ctx);
+		reply.resolve("ビルドは成功しました。");
+		await settle();
+
+		expect(extension.pi.sent).toHaveLength(0);
+	});
+
+	test("session_switch discards pending translations", async () => {
+		const { extension, session } = await answerSession();
+		const reply = Promise.withResolvers<string>();
+		extension.respond = () => reply.promise;
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		session.setSessionId("session-2");
+		await extension.pi.emit("session_switch", { type: "session_switch" }, session.ctx);
+		reply.resolve("ビルドは成功しました。");
+		await settle();
+
+		expect(extension.pi.sent).toHaveLength(0);
+		expect(session.notifications.filter(notice => notice.message.startsWith("Answer translation failed"))).toEqual(
+			[],
+		);
+	});
+
+	test("session_switch discards held translations", async () => {
+		const { extension, session } = await answerSession();
+		extension.respond = () => Promise.resolve("ビルドは成功しました。");
+
+		session.setIdle(false);
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		await settle();
+		session.setSessionId("session-2");
+		await extension.pi.emit("session_switch", { type: "session_switch" }, session.ctx);
+		session.setIdle(true);
+		await extension.pi.command().handler("answer off", session.ctx);
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Next.")), session.ctx);
+		await settle();
+
+		expect(extension.pi.sent).toHaveLength(0);
+	});
+
+	test("warns when the translation model fails", async () => {
+		const { extension, session } = await answerSession();
+		extension.respond = () => Promise.reject(new Error("quota exceeded"));
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		const notice = await waitForNotice(session, n => n.message.startsWith("Answer translation failed:"));
+
+		expect(notice.type).toBe("warning");
+		expect(notice.message).toContain("quota exceeded");
+		expect(extension.pi.sent).toHaveLength(0);
+	});
+
+	describe("provider context", () => {
+		const contextMessages = () => [
+			userMessage("go"),
+			assistantMessage([{ type: "text", text: "Build passed." }]),
+			{ role: "custom", customType: "omp-translate", content: "ビルドは成功しました。", display: true, timestamp: 0 },
+			{ role: "custom", customType: "other", content: "keep me", display: true, timestamp: 0 },
+		];
+
+		for (const [name, patch, options] of [
+			["answer on", { answer: true }, {}],
+			["answer off", { answer: false }, {}],
+			["no target language", { targetLanguage: "", answer: false }, {}],
+			["a subagent", {}, { kind: "sub" }],
+		] as [string, Partial<TranslationSettings>, FakeContextOptions][]) {
+			test(`excludes only omp-translate messages with ${name}`, async () => {
+				const { extension, session } = await answerSession(patch, options);
+				const messages = contextMessages();
+
+				const result = await extension.pi.emit("context", { type: "context", messages }, session.ctx);
+
+				expect(result).toEqual({ messages: [messages[0], messages[1], messages[3]] });
+			});
+		}
+
+		test("leaves context untouched without translation messages", async () => {
+			const { extension, session } = await answerSession();
+			const messages = contextMessages().filter(m => !("customType" in m && m.customType === "omp-translate"));
+
+			const result = await extension.pi.emit("context", { type: "context", messages }, session.ctx);
+
+			expect(result).toBeUndefined();
+		});
+	});
+
+	test("/translate answer on persists and reports status", async () => {
+		await writeSettings({ targetLanguage: "ja" });
+		const extension = loadExtension();
+		const session = fakeContext();
+
+		await extension.pi.command().handler("answer on", session.ctx);
+		expect((await readSettings()).answer).toBe(true);
+
+		await extension.pi.command().handler("status", session.ctx);
+		expect(session.notifications.at(-1)?.message).toContain("Answer translation: on");
+
+		await extension.pi.command().handler("answer off", session.ctx);
+		expect((await readSettings()).answer).toBe(false);
+		await extension.pi.command().handler("status", session.ctx);
+		expect(session.notifications.at(-1)?.message).toContain("Answer translation: off");
+	});
+
+	test("settings files without the answer key load as off", async () => {
+		const { answer: _answer, ...legacy } = JSON.parse(await writeSettings({ targetLanguage: "ja" }));
+		await fs.writeFile(settingsPath, JSON.stringify(legacy));
+		const extension = loadExtension();
+		const session = fakeContext();
+
+		await extension.pi.command().handler("status", session.ctx);
+		expect(session.notifications.at(-1)?.message).toContain("Answer translation: off");
+		await extension.pi.emit("session_start", { type: "session_start" }, session.ctx);
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		await settle();
+		expect(extension.calls).toHaveLength(0);
+	});
+
+	test("completes answer subcommands", () => {
+		const extension = loadExtension();
+		const complete = extension.pi.command().getArgumentCompletions;
+
+		expect(complete?.("ans")).toEqual([
+			{ value: "answer on", label: "answer on" },
+			{ value: "answer off", label: "answer off" },
+		]);
 	});
 });
 

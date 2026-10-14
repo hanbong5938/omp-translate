@@ -15,10 +15,13 @@ import {
 } from "./settings.ts";
 import type { ModelCaller, ThinkingRequest, ThinkingViewState, TimerHost } from "./translation.ts";
 import {
+	ANSWER_TRANSLATION_TIMEOUT_MS,
+	buildAnswerPrompt,
 	buildRequestPrompt,
 	buildThinkingPrompt,
 	createModelCaller,
 	describeLanguage,
+	finalAnswerText,
 	shouldTranslateInput,
 	ThinkingTranslator,
 	translateText,
@@ -51,14 +54,18 @@ const LANGUAGE_CHOICES: readonly { label: string; tag: string }[] = [
 const CUSTOM_LANGUAGE_LABEL = "Custom language tag";
 const SETUP_TITLE = "omp-translate: choose a language for translated thinking";
 const QUOTA_NOTICE =
-	"omp-translate sends visible thinking to your selected translation model's provider, which uses its quota.";
+	"omp-translate sends visible thinking and enabled answer translations to your selected translation model's provider, which uses its quota.";
+
+/** Custom message type of answer translations; shown as the box header and filtered from every provider request. */
+export const ANSWER_CUSTOM_TYPE = "omp-translate";
 
 const COMMAND_DESCRIPTION =
-	"Translate thinking and prompts: status, setup, thinking, request, language, request-language, model, request-model";
+	"Translate thinking, answers, and prompts: status, setup, thinking, answer, request, language, request-language, model, request-model";
 const USAGE = {
 	status: "/translate [status]",
 	setup: "/translate setup",
 	thinking: "/translate thinking on|off",
+	answer: "/translate answer on|off",
 	request: "/translate request on|off",
 	language: "/translate language <BCP-47 tag>",
 	"request-language": "/translate request-language <BCP-47 tag>",
@@ -72,6 +79,8 @@ const COMPLETIONS: readonly string[] = [
 	"thinking off",
 	"request on",
 	"request off",
+	"answer on",
+	"answer off",
 	"language ",
 	"request-language ",
 	"model ",
@@ -160,7 +169,10 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		let setupActive = false;
 		let instructionShown = false;
 		const inputControllers = new Set<AbortController>();
-		/** Bumped whenever the active main session changes or ends; in-flight prompt translations compare against it. */
+		const answerControllers = new Set<AbortController>();
+		/** Answer translations finished while the agent was busy; posted at the next idle main agent_end. */
+		let heldAnswers: { epoch: number; text: string; targetLanguage: string }[] = [];
+		/** Bumped whenever the active main session changes or ends; in-flight prompt/answer translations compare against it. */
 		let sessionEpoch = 0;
 
 		const timers: TimerHost = {
@@ -187,11 +199,14 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			mountedViews.clearAll();
 		}
 
-		/** Marks in-flight prompt translations stale, aborts them, and drops thinking translations. */
+		/** Marks in-flight prompt/answer translations stale, aborts them, and drops held answers and thinking translations. */
 		function invalidateSessionWork(): void {
 			sessionEpoch++;
 			for (const controller of inputControllers) controller.abort();
 			inputControllers.clear();
+			for (const controller of answerControllers) controller.abort();
+			answerControllers.clear();
+			heldAnswers = [];
 			resetTranslations();
 		}
 
@@ -293,6 +308,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			ctx.ui.notify(
 				[
 					`Thinking translation: ${settings.thinking ? "on" : "off"}`,
+					`Answer translation: ${settings.answer ? "on" : "off"}`,
 					`Prompt translation: ${settings.request ? "on" : "off"}`,
 					`Target language: ${target}`,
 					`Request language: ${describeLanguage(settings.requestLanguage)}`,
@@ -335,10 +351,12 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 					return runSetup(ctx);
 				}
 				case "thinking":
+				case "answer":
 				case "request": {
 					const [value] = operands;
 					if (operands.length !== 1 || (value !== "on" && value !== "off")) return usage(ctx, sub);
-					return applyPatch(ctx, sub === "thinking" ? { thinking: value === "on" } : { request: value === "on" });
+					const on = value === "on";
+					return applyPatch(ctx, sub === "thinking" ? { thinking: on } : sub === "answer" ? { answer: on } : { request: on });
 				}
 				case "language":
 				case "request-language": {
@@ -456,6 +474,70 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			} finally {
 				inputControllers.delete(controller);
 			}
+		});
+
+		/** Posts a display-only translation; idle-only, no options, so it never steers or starts a turn. */
+		function postAnswer(text: string, targetLanguage: string): void {
+			pi.sendMessage({ customType: ANSWER_CUSTOM_TYPE, content: text, display: true, details: { targetLanguage } });
+		}
+
+		/** Posts translations that finished while a newer run was streaming, in order, if the agent is idle. */
+		function flushHeldAnswers(ctx: ExtensionContext): void {
+			if (!ctx.isIdle()) return;
+			const held = heldAnswers;
+			heldAnswers = [];
+			for (const answer of held) {
+				if (answer.epoch === sessionEpoch) postAnswer(answer.text, answer.targetLanguage);
+			}
+		}
+
+		// Synchronous: the translation runs in the background so the 30 s handler timeout never applies.
+		pi.on("agent_end", (event, ctx) => {
+			if (ctx.agent.kind !== "main" || ctx.mode !== "tui") return;
+			flushHeldAnswers(ctx);
+			if (event.willContinue === true) return;
+			const settings = store.settings;
+			if (!settings || !settings.answer || !isConfigured(settings)) return;
+			const text = finalAnswerText(event.messages);
+			if (text === undefined) return;
+			const selector = thinkingModelSelector(settings);
+			const model = ctx.models.resolve(selector);
+			if (!model) {
+				ctx.ui.notify(`Answer translation skipped; model not found: ${selector}`, "warning");
+				return;
+			}
+			const epoch = sessionEpoch;
+			const targetLanguage = settings.targetLanguage;
+			const controller = new AbortController();
+			answerControllers.add(controller);
+			const isStale = (): boolean => epoch !== sessionEpoch || controller.signal.aborted;
+			translateText(
+				createCaller(model, ctx),
+				buildAnswerPrompt(targetLanguage),
+				text,
+				controller.signal,
+				ANSWER_TRANSLATION_TIMEOUT_MS,
+			)
+				.then(translated => {
+					if (isStale() || store.settings?.answer !== true || translated.trim() === text) return;
+					if (ctx.isIdle()) postAnswer(translated, targetLanguage);
+					else heldAnswers.push({ epoch, text: translated, targetLanguage });
+				})
+				.catch(error => {
+					if (isStale()) return;
+					ctx.ui.notify(`Answer translation failed: ${errorMessage(error)}`, "warning");
+				})
+				.finally(() => {
+					answerControllers.delete(controller);
+				});
+		});
+
+		// Unconditional: answer translations are display-only and must never reach any provider request.
+		pi.on("context", event => {
+			const kept = event.messages.filter(
+				message => !(message.role === "custom" && message.customType === ANSWER_CUSTOM_TYPE),
+			);
+			return kept.length === event.messages.length ? undefined : { messages: kept };
 		});
 
 		pi.registerCommand("translate", {

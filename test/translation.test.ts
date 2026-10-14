@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { Api, AssistantMessage, Context, Model, StopReason, completeSimple } from "@oh-my-pi/pi-ai";
+import type { AgentEndEvent } from "@oh-my-pi/pi-coding-agent";
 import {
 	buildRequestPrompt,
+	finalAnswerText,
 	createModelCaller,
 	MarkerMismatchError,
 	type ModelCall,
@@ -312,6 +314,11 @@ describe("translateText", () => {
 		expect(signals[0]?.aborted).toBe(true);
 	});
 
+	test("rejects at a custom timeoutMs even if the caller never settles", async () => {
+		const caller = () => new Promise<string>(() => {});
+		await expect(translateText(caller, systemPrompt, "Hola", undefined, 10)).rejects.toThrow();
+	});
+
 	test("restores code around the translated prose", async () => {
 		const caller = async ({ text }: ModelCall) => text.replace("Ejecuta", "Run");
 		expect(await translateText(caller, systemPrompt, "Ejecuta `ls -la`")).toBe("Run `ls -la`");
@@ -325,6 +332,71 @@ describe("translateText", () => {
 		};
 		expect(await translateText(caller, systemPrompt, source)).toBe("Explain this function");
 		expect(seen).toEqual([source]);
+	});
+});
+
+type AgentMessage = AgentEndEvent["messages"][number];
+
+function userMessage(text: string): AgentMessage {
+	return { role: "user", content: text, timestamp: 0 } as unknown as AgentMessage;
+}
+
+function assistantMessage(content: unknown[], stopReason: StopReason = "stop"): AgentMessage {
+	return { role: "assistant", content, stopReason, timestamp: 0 } as unknown as AgentMessage;
+}
+
+describe("finalAnswerText", () => {
+	test("uses only the last assistant message", () => {
+		const messages = [
+			userMessage("hi"),
+			assistantMessage([{ type: "text", text: "First answer." }]),
+			userMessage("again"),
+			assistantMessage([{ type: "text", text: "  Build passed.  " }]),
+		];
+		expect(finalAnswerText(messages)).toBe("Build passed.");
+	});
+
+	test("joins multiple text blocks and skips non-text blocks", () => {
+		const messages = [
+			assistantMessage([
+				{ type: "thinking", thinking: "hmm" },
+				{ type: "text", text: "Part one." },
+				{ type: "text", text: "Part two." },
+			]),
+		];
+		expect(finalAnswerText(messages)).toBe("Part one.\n\nPart two.");
+	});
+
+	test("returns undefined without an assistant message", () => {
+		expect(finalAnswerText([userMessage("hi")])).toBeUndefined();
+		expect(finalAnswerText([])).toBeUndefined();
+	});
+
+	test.each(["toolUse", "length", "error", "aborted"] as StopReason[])("returns undefined for stopReason %p", reason => {
+		expect(finalAnswerText([assistantMessage([{ type: "text", text: "Done." }], reason)])).toBeUndefined();
+	});
+
+	test("returns undefined when the answer contains a tool call", () => {
+		const messages = [
+			assistantMessage([
+				{ type: "text", text: "Running." },
+				{ type: "toolCall", id: "1", name: "bash", arguments: {} },
+			]),
+		];
+		expect(finalAnswerText(messages)).toBeUndefined();
+	});
+
+	test("returns undefined for empty or whitespace text", () => {
+		expect(finalAnswerText([assistantMessage([])])).toBeUndefined();
+		expect(finalAnswerText([assistantMessage([{ type: "text", text: "  \n " }])])).toBeUndefined();
+	});
+
+	test("does not fall back to an earlier assistant when the last is ineligible", () => {
+		const messages = [
+			assistantMessage([{ type: "text", text: "Earlier." }]),
+			assistantMessage([{ type: "text", text: "Later." }], "toolUse"),
+		];
+		expect(finalAnswerText(messages)).toBeUndefined();
 	});
 });
 
