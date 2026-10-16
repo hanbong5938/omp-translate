@@ -128,6 +128,7 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 
 - Apenas respostas finais concluídas do agente principal na TUI são traduzidas. Subagentes, modos não interativos, continuações/novas tentativas e turnos com chamadas de ferramentas não são traduzidos.
 - A tradução é executada em segundo plano com prazo de 60 s e não inicia um novo turno do agente. Se terminar enquanto o agente estiver ocupado, ela é retida e exibida ao final da próxima execução do agente principal.
+- Se o modelo omitir, duplicar ou corromper um marcador de código, a resposta é traduzida novamente uma vez a partir do texto original, dentro do mesmo prazo de 60 s. Se essa tentativa também falhar, um aviso é exibido e nenhuma tradução é publicada.
 - Traduções pendentes ou retidas são descartadas ao trocar ou ramificar a sessão, ou no encerramento. Um resultado idêntico ao original (já no idioma de destino) não é exibido.
 - A resposta original permanece intacta na transcrição, no arquivo de sessão e nas futuras requisições ao LLM. A tradução é uma mensagem personalizada separada (`display: true`, `customType: "omp-translate"`) que o host salva na sessão e exibe novamente ao retomá-la.
 - O plugin sempre remove essas mensagens do contexto enviado ao provedor, mesmo com `answer` desativado. Essa exclusão só funciona com o plugin carregado: não o desative ao retomar sessões com respostas traduzidas, ou o host enviará essas mensagens ao modelo.

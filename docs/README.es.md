@@ -128,6 +128,7 @@ Las etiquetas de idioma se guardan en forma canónica. Si edita el archivo a man
 
 - Solo se traducen las respuestas finales completadas del agente principal en la TUI. No se traducen subagentes, modos no interactivos, continuaciones/reintentos ni turnos con llamadas a herramientas.
 - La traducción se ejecuta en segundo plano con un plazo de 60 s y no inicia un nuevo turno del agente. Si termina mientras el agente está ocupado, se retiene y se muestra al finalizar la siguiente ejecución del agente principal.
+- Si el modelo omite, duplica o corrompe un marcador de código, la respuesta se vuelve a traducir una vez desde el texto original dentro del mismo plazo de 60 s. Si ese intento también falla, se muestra una advertencia y no se publica ninguna traducción.
 - Las traducciones pendientes o retenidas se descartan al cambiar o ramificar la sesión, o al cerrarla. Si el resultado es idéntico al original (ya está en el idioma de destino), no se muestra.
 - La respuesta original permanece intacta en la transcripción, en el archivo de sesión y en las solicitudes futuras al LLM. La traducción es un mensaje personalizado aparte (`display: true`, `customType: "omp-translate"`) que el host guarda en la sesión y vuelve a mostrar al reanudarla.
 - El plugin excluye siempre estos mensajes del contexto enviado al proveedor, incluso con `answer` desactivado. Esta exclusión solo funciona si el plugin está cargado: no lo desactive al reanudar sesiones con respuestas traducidas, o el host enviará esos mensajes al modelo.

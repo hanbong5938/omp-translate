@@ -13,6 +13,7 @@ import {
 	ThinkingTranslator,
 	type ThinkingViewState,
 	type TimerHost,
+	translateAnswer,
 	translateText,
 } from "../src/translation.ts";
 
@@ -332,6 +333,148 @@ describe("translateText", () => {
 		};
 		expect(await translateText(caller, systemPrompt, source)).toBe("Explain this function");
 		expect(seen).toEqual([source]);
+	});
+});
+
+describe("translateAnswer", () => {
+	const systemPrompt = buildRequestPrompt("ko");
+	const source = "Run `npm test` and `ls` now.";
+	const valid = (text: string) => text.replace("Run ", "실행: ");
+	const expected = "실행: `npm test` and `ls` now.";
+	const markerOf = (text: string, index: number) => text.match(new RegExp(`@@OMPT_[A-Za-z0-9]+_${index}@@`))?.[0] ?? "";
+
+	/** Caller that returns scripted outputs per attempt and records every call. */
+	function scripted(...replies: ((call: ModelCall) => Promise<string> | string)[]) {
+		const calls: ModelCall[] = [];
+		const caller = async (call: ModelCall) => {
+			calls.push(call);
+			const reply = replies[calls.length - 1];
+			if (!reply) throw new Error("unexpected call");
+			return reply(call);
+		};
+		return { calls, caller };
+	}
+
+	test("restores code after a first-attempt success with one provider call", async () => {
+		const { calls, caller } = scripted(call => valid(call.text));
+		expect(await translateAnswer(caller, systemPrompt, source)).toBe(expected);
+		expect(calls).toHaveLength(1);
+	});
+
+	const invalid: [string, (text: string) => string][] = [
+		["missing", text => text.replace(markerOf(text, 1), "")],
+		["duplicated", text => `${text} ${markerOf(text, 0)}`],
+		["unknown", text => `${text} ${markerOf(text, 0).replace("_0@@", "_9@@")}`],
+		["malformed", text => text.replace(markerOf(text, 0), markerOf(text, 0).slice(1, -1))],
+	];
+	for (const [name, corrupt] of invalid) {
+		test(`recovers from a ${name} marker when the second response is valid`, async () => {
+			const { calls, caller } = scripted(
+				call => corrupt(valid(call.text)),
+				call => valid(call.text),
+			);
+			expect(await translateAnswer(caller, systemPrompt, source)).toBe(expected);
+			expect(calls).toHaveLength(2);
+			expect(calls[1]?.text).not.toBe(calls[0]?.text);
+			expect(calls.map(call => call.systemPrompt)).toEqual([systemPrompt, systemPrompt]);
+		});
+	}
+
+	test("rejects with MarkerMismatchError after exactly two invalid responses", async () => {
+		const { calls, caller } = scripted(
+			() => "실행하세요.",
+			() => "실행하세요.",
+		);
+		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow(MarkerMismatchError);
+		expect(calls).toHaveLength(2);
+	});
+
+	test("does not retry a provider error", async () => {
+		const { calls, caller } = scripted(() => Promise.reject(new Error("quota exceeded")));
+		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow("quota exceeded");
+		expect(calls).toHaveLength(1);
+	});
+
+	test("does not retry empty output", async () => {
+		const { calls, caller } = scripted(() => "  \n ");
+		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow("empty translation");
+		expect(calls).toHaveLength(1);
+	});
+
+	test("propagates a second-attempt provider error without a third call", async () => {
+		const { calls, caller } = scripted(
+			() => "실행하세요.",
+			() => Promise.reject(new Error("rate limited")),
+		);
+		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow("rate limited");
+		expect(calls).toHaveLength(2);
+	});
+
+	test("makes no provider call when the signal is already aborted", async () => {
+		const controller = new AbortController();
+		controller.abort(new Error("cancelled"));
+		const { calls, caller } = scripted(call => valid(call.text));
+		await expect(translateAnswer(caller, systemPrompt, source, controller.signal)).rejects.toThrow("cancelled");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("does not retry when aborted after the first invalid response", async () => {
+		const controller = new AbortController();
+		const { calls, caller } = scripted(
+			() => {
+				controller.abort(new Error("cancelled"));
+				return "실행하세요.";
+			},
+			call => valid(call.text),
+		);
+		await expect(translateAnswer(caller, systemPrompt, source, controller.signal)).rejects.toThrow();
+		expect(calls).toHaveLength(1);
+	});
+
+	test("rejects when aborted during a second attempt that never settles", async () => {
+		const controller = new AbortController();
+		const pending = Promise.withResolvers<void>();
+		const { calls, caller } = scripted(
+			() => "실행하세요.",
+			() => {
+				pending.resolve();
+				return new Promise<string>(() => {});
+			},
+		);
+		const translation = translateAnswer(caller, systemPrompt, source, controller.signal);
+		await pending.promise;
+		controller.abort(new Error("cancelled"));
+		await expect(translation).rejects.toThrow("cancelled");
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.signal.aborted).toBe(true);
+	});
+
+	test("bounds both attempts by one shared deadline", async () => {
+		const original = AbortSignal.timeout;
+		const deadlines: AbortController[] = [];
+		AbortSignal.timeout = (_ms: number) => {
+			const controller = new AbortController();
+			deadlines.push(controller);
+			return controller.signal;
+		};
+		try {
+			const pending = Promise.withResolvers<void>();
+			const { calls, caller } = scripted(
+				() => "실행하세요.",
+				() => {
+					pending.resolve();
+					return new Promise<string>(() => {});
+				},
+			);
+			const translation = translateAnswer(caller, systemPrompt, source);
+			await pending.promise;
+			deadlines[0]?.abort(new Error("deadline"));
+			await expect(translation).rejects.toThrow("deadline");
+			expect(calls).toHaveLength(2);
+			expect(calls[1]?.signal.aborted).toBe(true);
+		} finally {
+			AbortSignal.timeout = original;
+		}
 	});
 });
 

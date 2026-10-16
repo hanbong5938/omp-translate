@@ -15,7 +15,6 @@ import {
 } from "./settings.ts";
 import type { ModelCaller, ThinkingRequest, ThinkingViewState, TimerHost } from "./translation.ts";
 import {
-	ANSWER_TRANSLATION_TIMEOUT_MS,
 	buildAnswerPrompt,
 	buildRequestPrompt,
 	buildThinkingPrompt,
@@ -24,6 +23,7 @@ import {
 	finalAnswerText,
 	shouldTranslateInput,
 	ThinkingTranslator,
+	translateAnswer,
 	translateText,
 } from "./translation.ts";
 
@@ -511,13 +511,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			const controller = new AbortController();
 			answerControllers.add(controller);
 			const isStale = (): boolean => epoch !== sessionEpoch || controller.signal.aborted;
-			translateText(
-				createCaller(model, ctx),
-				buildAnswerPrompt(targetLanguage),
-				text,
-				controller.signal,
-				ANSWER_TRANSLATION_TIMEOUT_MS,
-			)
+			translateAnswer(createCaller(model, ctx), buildAnswerPrompt(targetLanguage), text, controller.signal)
 				.then(translated => {
 					if (isStale() || store.settings?.answer !== true || translated.trim() === text) return;
 					if (ctx.isIdle()) postAnswer(translated, targetLanguage);

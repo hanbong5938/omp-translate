@@ -42,7 +42,8 @@ const TRANSLATOR_RULES = [
 	"Keep file paths, identifiers, commands, URLs, and markdown/XML syntax verbatim.",
 	`Placeholders of the form ${MARKER_PREFIX}<id>_<n>${MARKER_SUFFIX} stand for protected code: copy each one exactly once, unchanged, at the corresponding position.`,
 	"Text already in the target language stays unchanged. Mixed-language input is translated entirely into the target language.",
-	"Output only the translation, without the <source> tags, preface, or notes.",
+	"Translate the entire source, from its first sentence to its last; never omit, summarize, merge, or reorder any sentence, paragraph, or list item.",
+	"Output only the translation, without the <source> tags. Do not add a preface or notes of your own.",
 ].join("\n");
 
 export function buildThinkingPrompt(targetLanguage: string): string {
@@ -270,6 +271,25 @@ export async function translateText(
 	const translated = await untilAborted(call, combined);
 	if (!translated.trim()) throw new Error("empty translation");
 	return protectedText.restore(translated);
+}
+
+/** translateText under one shared deadline; retries once, only on MarkerMismatchError. */
+export async function translateAnswer(
+	caller: ModelCaller,
+	systemPrompt: string,
+	source: string,
+	signal?: AbortSignal,
+	timeoutMs: number = ANSWER_TRANSLATION_TIMEOUT_MS,
+): Promise<string> {
+	const sharedSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
+	sharedSignal.throwIfAborted();
+	try {
+		return await translateText(caller, systemPrompt, source, sharedSignal, timeoutMs);
+	} catch (error) {
+		if (!(error instanceof MarkerMismatchError)) throw error;
+	}
+	sharedSignal.throwIfAborted();
+	return translateText(caller, systemPrompt, source, sharedSignal, timeoutMs);
 }
 
 export type ThinkingViewState =

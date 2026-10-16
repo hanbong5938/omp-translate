@@ -899,6 +899,63 @@ describe("answer translation", () => {
 		expect(extension.pi.sent).toHaveLength(0);
 	});
 
+	test("retries once after a dropped code marker and posts the restored answer without warning", async () => {
+		const { extension, session } = await answerSession();
+		let attempt = 0;
+		extension.respond = call => {
+			attempt++;
+			return Promise.resolve(attempt === 1 ? "実行してください。" : call.text.replace("Run ", "実行: "));
+		};
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Run `npm test` now.")), session.ctx);
+		await settle();
+		await settle();
+
+		expect(extension.calls).toHaveLength(2);
+		expect(extension.calls[1]?.text).not.toBe(extension.calls[0]?.text);
+		expect(extension.pi.sent).toEqual([answerPost("実行: `npm test` now.")]);
+		expect(session.notifications.filter(n => n.message.startsWith("Answer translation failed"))).toEqual([]);
+	});
+
+	test("warns once and posts nothing when both attempts drop a code marker", async () => {
+		const { extension, session } = await answerSession();
+		extension.respond = () => Promise.resolve("実行してください。");
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Run `npm test` now.")), session.ctx);
+		const notice = await waitForNotice(session, n => n.message.startsWith("Answer translation failed:"));
+		await settle();
+
+		expect(notice.type).toBe("warning");
+		expect(extension.calls).toHaveLength(2);
+		expect(extension.pi.sent).toHaveLength(0);
+		expect(session.notifications.filter(n => n.message.startsWith("Answer translation failed"))).toHaveLength(1);
+	});
+
+	test("session_switch during the retry aborts it and suppresses late output and warnings", async () => {
+		const { extension, session } = await answerSession();
+		const retry = Promise.withResolvers<string>();
+		const retrySignal = Promise.withResolvers<{ signal: AbortSignal; text: string }>();
+		let attempt = 0;
+		extension.respond = call => {
+			attempt++;
+			if (attempt === 1) return Promise.resolve("実行してください。");
+			retrySignal.resolve({ signal: call.signal, text: call.text });
+			return retry.promise;
+		};
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Run `npm test` now.")), session.ctx);
+		const second = await retrySignal.promise;
+		session.setSessionId("session-2");
+		await extension.pi.emit("session_switch", { type: "session_switch" }, session.ctx);
+		expect(second.signal.aborted).toBe(true);
+		retry.resolve(second.text.replace("Run ", "実行: "));
+		await settle();
+
+		expect(extension.calls).toHaveLength(2);
+		expect(extension.pi.sent).toHaveLength(0);
+		expect(session.notifications.filter(n => n.message.startsWith("Answer translation failed"))).toEqual([]);
+	});
+
 	describe("provider context", () => {
 		const contextMessages = () => [
 			userMessage("go"),
