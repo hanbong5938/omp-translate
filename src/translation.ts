@@ -6,7 +6,7 @@ import { fromMarkdown, type MarkdownNode } from "./markdown-parser.js";
 export const TRANSLATION_TIMEOUT_MS = 20_000;
 /** Final answers are longer than thinking chunks or prompts. */
 export const ANSWER_TRANSLATION_TIMEOUT_MS = 60_000;
-/** Start delay of each unique-text thinking request; streaming text left unchanged this long is translated. */
+/** Fixed start delay before each unique eligible thinking text is translated; not reset by later renders (not a debounce). */
 export const THINKING_DEBOUNCE_MS = 1_500;
 /** Completed results and failures are each bounded to this many entries, FIFO eviction. */
 export const CACHE_LIMIT = 500;

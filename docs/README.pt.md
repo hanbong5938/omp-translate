@@ -119,7 +119,8 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 
 ### Tradução do raciocínio
 
-- Cada texto de raciocínio distinto aguarda 1,5 s antes que sua requisição de tradução comece. Snapshots distintos do streaming são requisições independentes, portanto um bloco longo transmitido em streaming pode gerar várias chamadas ao modelo.
+- Apenas o raciocínio finalizado é traduzido: texto que o host confirmou (uma mensagem concluída, um segmento encerrado por uma chamada de ferramenta, histórico/retomada). Snapshots do streaming nunca são enviados. Cada texto finalizado distinto aguarda 1,5 s antes que sua requisição de tradução comece.
+- Requer um host OMP que passe `final` aos renderizadores de raciocínio. Em um host mais antigo, a tradução do raciocínio é desativada e um erro é exibido uma vez por sessão: `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` A tradução de prompts e respostas continua funcionando.
 - Os resultados são armazenados em cache na memória (até 500 entradas). A chave do cache inclui o modelo, o idioma de destino e o texto. Visualizações que exibem texto idêntico compartilham uma única requisição.
 - Alterar as configurações, trocar ou ramificar a sessão, ou encerrar a sessão cancela o trabalho pendente e limpa as traduções já exibidas na tela.
 - Cada tradução tem um prazo de 20 s.

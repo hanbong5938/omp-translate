@@ -174,6 +174,8 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		let heldAnswers: { epoch: number; text: string; targetLanguage: string }[] = [];
 		/** Bumped whenever the active main session changes or ends; in-flight prompt/answer translations compare against it. */
 		let sessionEpoch = 0;
+		/** Set once the missing-`final` host error has been shown this session; reset on session start/change/end. */
+		let reportedMissingFinal = false;
 
 		const timers: TimerHost = {
 			setTimeout(callback, ms) {
@@ -207,6 +209,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			for (const controller of answerControllers) controller.abort();
 			answerControllers.clear();
 			heldAnswers = [];
+			reportedMissingFinal = false;
 			resetTranslations();
 		}
 
@@ -387,6 +390,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		pi.on("session_start", async (_event, ctx) => {
 			if (ctx.agent.kind !== "main") return;
 			boundCtx = ctx;
+			reportedMissingFinal = false;
 			await initialLoad;
 			if (boundCtx !== ctx) return;
 			const settings = store.settings;
@@ -419,6 +423,21 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			const ctx = boundCtx;
 			const settings = store.settings;
 			if (!ctx || !settings || !settings.thinking || !isConfigured(settings) || !rc.text.trim()) return undefined;
+			// `final` is not declared by the installed host types; older hosts omit it and cannot be supported.
+			const final = "final" in rc ? rc.final : undefined;
+			if (typeof final !== "boolean") {
+				if (!reportedMissingFinal) {
+					reportedMissingFinal = true;
+					report(
+						ctx,
+						"omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.",
+						"error",
+					);
+				}
+				return undefined;
+			}
+			// Streaming (non-final) segments are never translated; only confirmed display segments are.
+			if (!final) return undefined;
 			const view = new Text("", 1, 0);
 			const initial = translator.attach(thinkingRequest(ctx, settings, rc.text), state => {
 				view.setText(renderState(state, theme));

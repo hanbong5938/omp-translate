@@ -119,7 +119,8 @@ Les étiquettes de langue sont stockées sous forme canonique. Si vous modifiez 
 
 ### Traduction de la réflexion
 
-- Chaque texte de réflexion distinct attend 1,5 s avant le lancement de sa requête de traduction. Les instantanés de streaming distincts sont des requêtes indépendantes ; un long bloc diffusé en streaming peut donc déclencher plusieurs appels au modèle.
+- Seule la réflexion finalisée est traduite : le texte confirmé par l'hôte (un message terminé, un segment clos par un appel d'outil, l'historique/la reprise). Les instantanés de streaming ne sont jamais envoyés. Chaque texte finalisé distinct attend 1,5 s avant le lancement de sa requête de traduction.
+- Nécessite un hôte OMP qui transmet `final` aux moteurs de rendu de la réflexion. Sur un hôte plus ancien, la traduction de la réflexion est désactivée et une erreur s'affiche une fois par session : `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` La traduction des prompts et des réponses continue de fonctionner.
 - Les résultats sont mis en cache en mémoire (jusqu'à 500 entrées). La clé de cache comprend le modèle, la langue cible et le texte. Les vues affichant un texte identique partagent une même requête.
 - Modifier les paramètres, changer de session ou en créer une branche, ou terminer la session annule le travail en attente et efface les traductions déjà affichées.
 - Chaque traduction dispose d'un délai de 20 s.

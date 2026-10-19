@@ -94,6 +94,7 @@ function fakeContext(options: FakeContextOptions = {}) {
 	const timers: FakeTimer[] = [];
 	let idle = true;
 	let sessionId = "session-1";
+	let resolves = 0;
 	const ctx = {
 		mode,
 		hasUI: mode === "tui",
@@ -115,8 +116,10 @@ function fakeContext(options: FakeContextOptions = {}) {
 			},
 		},
 		models: {
-			resolve: (spec: string) =>
-				options.models ? options.models[spec] : spec === "nope" ? undefined : fakeModel,
+			resolve: (spec: string) => {
+				resolves++;
+				return options.models ? options.models[spec] : spec === "nope" ? undefined : fakeModel;
+			},
 		},
 		sessionManager: { getSessionId: () => sessionId },
 		setTimeout: (callback: () => void) => {
@@ -143,6 +146,14 @@ function fakeContext(options: FakeContextOptions = {}) {
 			const { promise, resolve } = Promise.withResolvers<Notice>();
 			notificationWaiters.push(resolve);
 			return promise;
+		},
+		/** Timers scheduled through ctx.setTimeout that have neither fired nor been cleared. */
+		activeTimers(): number {
+			return timers.filter(timer => timer.active).length;
+		},
+		/** Number of ctx.models.resolve calls so far. */
+		resolves(): number {
+			return resolves;
 		},
 		fireTimers(): void {
 			for (const timer of timers.splice(0)) {
@@ -223,13 +234,15 @@ function inputEvent(text: string, images?: unknown[]) {
 	return { type: "input", text, source: "interactive", ...(images ? { images } : {}) };
 }
 
-function thinkingContext(text: string) {
+/** Render context from a host that reports finalized renders; `final` defaults to a confirmed (non-transient) segment. */
+function thinkingContext(text: string, final = true) {
 	let renders = 0;
 	const renderWaiters: (() => void)[] = [];
-	const rc: AssistantThinkingRenderContext = {
+	const rc: AssistantThinkingRenderContext & { final: boolean } = {
 		contentIndex: 0,
 		thinkingIndex: 0,
 		text,
+		final,
 		requestRender: () => {
 			renders++;
 			for (const waiter of renderWaiters.splice(0)) waiter();
@@ -1169,6 +1182,188 @@ describe("thinking renderer", () => {
 		expect(textOf(shortView)).toBe("考えてみよう");
 		expect(textOf(longView)).toBe("これについて考えてみよう");
 	});
+
+	test("streaming renders never translate; only the finalized text is requested once", async () => {
+		await writeSettings({ targetLanguage: "ja" });
+		const extension = loadExtension();
+		const answer = Promise.withResolvers<string>();
+		extension.respond = () => answer.promise;
+		const session = fakeContext();
+		await extension.pi.emit("session_start", { type: "session_start" }, session.ctx);
+		const resolvesBefore = session.resolves();
+
+		const words = Array.from({ length: 201 }, (_, index) => `step${index}`);
+		for (let length = 1; length <= 200; length++) {
+			const streaming = thinkingContext(words.slice(0, length).join(" "), false);
+			expect(extension.pi.render(streaming.rc)).toBeUndefined();
+			expect(session.activeTimers()).toBe(0);
+			session.fireTimers();
+			await settle();
+		}
+		expect(extension.calls).toHaveLength(0);
+		expect(session.resolves()).toBe(resolvesBefore);
+
+		const finalText = words.join(" ");
+		const thinking = thinkingContext(finalText);
+		const component = extension.pi.render(thinking.rc);
+		expect(textOf(component)).toBe("Translating…");
+		await settle();
+		expect(extension.calls).toHaveLength(0);
+
+		session.fireTimers();
+		await settle();
+		expect(extension.calls.map(call => call.text)).toEqual([finalText]);
+		const rendered = thinking.nextRender();
+		answer.resolve("最終的な考え。");
+		await rendered;
+		expect(textOf(component)).toBe("最終的な考え。");
+	});
+
+	test("finalized views of one text share the in-flight and completed translation; other texts stay independent", async () => {
+		await writeSettings({ targetLanguage: "ja" });
+		const extension = loadExtension();
+		const answers = new Map<string, PromiseWithResolvers<string>>();
+		extension.respond = call => {
+			const answer = Promise.withResolvers<string>();
+			answers.set(call.text, answer);
+			return answer.promise;
+		};
+		const session = fakeContext();
+		await extension.pi.emit("session_start", { type: "session_start" }, session.ctx);
+
+		const text = "I should check the config first.";
+		const first = thinkingContext(text);
+		const short = thinkingContext("Let me think");
+		const long = thinkingContext("Let me think about this");
+		const firstView = extension.pi.render(first.rc);
+		const shortView = extension.pi.render(short.rc);
+		const longView = extension.pi.render(long.rc);
+		session.fireTimers();
+		await settle();
+		expect(extension.calls.map(call => call.text).sort()).toEqual([text, "Let me think", "Let me think about this"].sort());
+
+		const rebuilt = thinkingContext(text);
+		const rebuiltView = extension.pi.render(rebuilt.rc);
+		expect(rebuiltView).not.toBe(firstView);
+		expect(textOf(rebuiltView)).toBe("Translating…");
+		expect(session.activeTimers()).toBe(0);
+		session.fireTimers();
+		await settle();
+		expect(extension.calls).toHaveLength(3);
+
+		const rendered = [first, rebuilt, short, long].map(thinking => thinking.nextRender());
+		answers.get(text)?.resolve("まず設定を確認するべきだ。");
+		answers.get("Let me think")?.resolve("考えてみよう");
+		answers.get("Let me think about this")?.resolve("これについて考えてみよう");
+		await Promise.all(rendered);
+		expect(textOf(firstView)).toBe("まず設定を確認するべきだ。");
+		expect(textOf(rebuiltView)).toBe("まず設定を確認するべきだ。");
+		expect(textOf(shortView)).toBe("考えてみよう");
+		expect(textOf(longView)).toBe("これについて考えてみよう");
+
+		const remounted = extension.pi.render(thinkingContext(text).rc);
+		expect(textOf(remounted)).toBe("まず設定を確認するべきだ。");
+		expect(session.activeTimers()).toBe(0);
+		session.fireTimers();
+		await settle();
+		expect(extension.calls).toHaveLength(3);
+	});
+
+	const MISSING_FINAL_WARNING =
+		"omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.";
+	const unsupportedFinals: [string, Record<string, unknown>][] = [
+		["absent", {}],
+		["undefined", { final: undefined }],
+		["null", { final: null }],
+		["string", { final: "true" }],
+		["number", { final: 1 }],
+	];
+	for (const [name, finalField] of unsupportedFinals) {
+		test(`${name} final: warns once per session, never translates thinking, keeps prompt and answer translation`, async () => {
+			await writeSettings({ targetLanguage: "ja", request: true, answer: true });
+			const extension = loadExtension();
+			const translations: Record<string, string> = {
+				"このバグを直してください": "Please fix this bug",
+				"Build passed.": "ビルドは成功しました。",
+			};
+			extension.respond = call => Promise.resolve(translations[call.text] ?? "unexpected");
+			const session = fakeContext();
+			await extension.pi.emit("session_start", { type: "session_start" }, session.ctx);
+			const legacyRender = (text: string) =>
+				extension.pi.render({
+					contentIndex: 0,
+					thinkingIndex: 0,
+					text,
+					requestRender: () => {},
+					...finalField,
+				} as AssistantThinkingRenderContext);
+			const warnings = () => session.notifications.filter(notice => notice.message === MISSING_FINAL_WARNING);
+			const warning: Notice = { message: MISSING_FINAL_WARNING, type: "error" };
+
+			expect(legacyRender("I should check the config first.")).toBeUndefined();
+			expect(legacyRender("I should check the config first. Then run the tests.")).toBeUndefined();
+			expect(warnings()).toEqual([warning]);
+
+			expect(await extension.pi.emit("input", inputEvent("このバグを直してください"), session.ctx)).toEqual({
+				text: "Please fix this bug",
+			});
+			await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+			await settle();
+			expect(extension.pi.sent).toEqual([answerPost("ビルドは成功しました。")]);
+
+			await extension.pi.command().handler("language ko", session.ctx);
+			expect(legacyRender("A thought after the settings change.")).toBeUndefined();
+			expect(warnings()).toEqual([warning]);
+
+			session.setSessionId("session-2");
+			await extension.pi.emit(
+				"session_switch",
+				{ type: "session_switch", reason: "new", previousSessionFile: undefined },
+				session.ctx,
+			);
+			expect(legacyRender("A thought in the next session.")).toBeUndefined();
+			expect(legacyRender("Another thought in the next session.")).toBeUndefined();
+			expect(warnings()).toEqual([warning, warning]);
+
+			await extension.pi.emit("session_start", { type: "session_start" }, session.ctx);
+			expect(legacyRender("A thought after session_start.")).toBeUndefined();
+			expect(warnings()).toEqual([warning, warning, warning]);
+
+			session.fireTimers();
+			await settle();
+			expect(extension.calls.filter(call => call.systemPrompt.includes("internal reasoning"))).toHaveLength(0);
+			expect(extension.calls.map(call => call.text)).toEqual(["このバグを直してください", "Build passed."]);
+		});
+	}
+
+	for (const [name, trigger] of clearTriggers) {
+		test(`streaming renders leave no pending request across ${name}`, async () => {
+			await writeSettings({ targetLanguage: "ja" });
+			const extension = loadExtension();
+			const session = fakeContext();
+			await extension.pi.emit("session_start", { type: "session_start" }, session.ctx);
+
+			const words = Array.from({ length: 20 }, (_, index) => `word${index}`);
+			for (let length = 1; length < words.length; length++) {
+				expect(extension.pi.render(thinkingContext(words.slice(0, length).join(" "), false).rc)).toBeUndefined();
+			}
+			expect(session.activeTimers()).toBe(0);
+
+			await trigger(extension.pi, session.ctx);
+			session.fireTimers();
+			await settle();
+			expect(extension.calls).toHaveLength(0);
+
+			const finalText = words.join(" ");
+			const component = extension.pi.render(thinkingContext(finalText).rc);
+			const stopsRendering = name === "/translate thinking off" || name === "session_shutdown";
+			if (stopsRendering) expect(component).toBeUndefined();
+			else expect(textOf(component)).toBe("Translating…");
+			session.fireTimers();
+			await settle();
+			expect(extension.calls.map(call => call.text)).toEqual(stopsRendering ? [] : [finalText]);
+		});
+	}
 });
 
 const tinyModel = { provider: "test", id: "tiny" } as unknown as Model<Api>;

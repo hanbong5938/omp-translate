@@ -124,7 +124,8 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 
 ### Thinking translation
 
-- Each distinct thinking text waits 1.5 s before its translation request starts. Distinct streaming snapshots are independent requests, so a long streamed block can issue several model calls.
+- Only finalized thinking is translated: text the host has confirmed (a completed message, a segment closed by a tool call, history/resume). Streaming snapshots are never sent. Each distinct finalized text waits 1.5 s before its translation request starts.
+- Requires an OMP host that passes `final` to thinking renderers. On an older host, thinking translation is disabled and an error is shown once per session: `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` Prompt and answer translation keep working.
 - Results are cached in memory (up to 500 entries). The cache key includes the model, target language, and text. Views showing identical text share one request.
 - Changing settings, switching or branching the session, or ending the session cancels pending work and clears translations already on screen.
 - Each translation has a 20 s deadline.

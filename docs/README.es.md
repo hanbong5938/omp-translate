@@ -119,7 +119,8 @@ Las etiquetas de idioma se guardan en forma canónica. Si edita el archivo a man
 
 ### Traducción del razonamiento
 
-- Cada texto de razonamiento distinto espera 1,5 s antes de que comience su solicitud de traducción. Las instantáneas distintas del streaming son solicitudes independientes, por lo que un bloque largo transmitido en streaming puede generar varias llamadas al modelo.
+- Solo se traduce el razonamiento finalizado: texto que el host ha confirmado (un mensaje completado, un segmento cerrado por una llamada a herramienta, historial/reanudación). Las instantáneas del streaming nunca se envían. Cada texto finalizado distinto espera 1,5 s antes de que comience su solicitud de traducción.
+- Requiere un host de OMP que pase `final` a los renderizadores de razonamiento. En un host más antiguo, la traducción del razonamiento se desactiva y se muestra un error una vez por sesión: `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` La traducción de prompts y respuestas sigue funcionando.
 - Los resultados se almacenan en caché en memoria (hasta 500 entradas). La clave de caché incluye el modelo, el idioma de destino y el texto. Las vistas que muestran un texto idéntico comparten una misma solicitud.
 - Cambiar la configuración, cambiar o ramificar la sesión, o finalizar la sesión cancela el trabajo pendiente y borra las traducciones ya mostradas en pantalla.
 - Cada traducción tiene un plazo de 20 s.
