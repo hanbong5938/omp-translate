@@ -6,7 +6,7 @@ Version 0.1.0 — une extension de traduction indépendante de la langue pour OM
 
 ## Présentation
 
-- **Traduction de la réflexion** : chaque bloc de réflexion (thinking) de l'assistant est traduit dans la langue d'affichage de votre choix, et la traduction s'affiche sous l'original dans la TUI. La réflexion originale et le contexte envoyé au fournisseur ne sont jamais modifiés.
+- **Traduction de la réflexion** : chaque bloc de réflexion (thinking) terminé de l'assistant est traduit dans la langue d'affichage de votre choix et affiché dans la TUI sous forme d'un message `omp-translate-thinking` distinct. La réflexion originale et le contexte envoyé au fournisseur ne sont jamais modifiés.
 - **Traduction des réponses** (facultative, désactivée par défaut) : dans la TUI, la réponse finale de l'agent principal est traduite dans la langue d'affichage et affichée dans un cadre `omp-translate` distinct sous l'original. Le message original n'est pas modifié.
 - **Traduction des prompts** (facultative, désactivée par défaut) : les prompts sortants sont traduits dans une langue de requête (l'anglais par défaut) avant leur envoi.
 
@@ -119,11 +119,14 @@ Les étiquettes de langue sont stockées sous forme canonique. Si vous modifiez 
 
 ### Traduction de la réflexion
 
-- Seule la réflexion finalisée est traduite : le texte confirmé par l'hôte (un message terminé, un segment clos par un appel d'outil, l'historique/la reprise). Les instantanés de streaming ne sont jamais envoyés. Chaque texte finalisé distinct attend 1,5 s avant le lancement de sa requête de traduction.
-- Nécessite un hôte OMP qui transmet `final` aux moteurs de rendu de la réflexion. Sur un hôte plus ancien, la traduction de la réflexion est désactivée et une erreur s'affiche une fois par session : `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` La traduction des prompts et des réponses continue de fonctionner.
-- Les résultats sont mis en cache en mémoire (jusqu'à 500 entrées). La clé de cache comprend le modèle, la langue cible et le texte. Les vues affichant un texte identique partagent une même requête.
-- Modifier les paramètres, changer de session ou en créer une branche, ou terminer la session annule le travail en attente et efface les traductions déjà affichées.
+- Seule la réflexion terminée est traduite : les blocs de réflexion d'un message de l'assistant de l'agent principal dans la TUI une fois ce message terminé, y compris les messages qui se terminent par un appel d'outil, une limite de longueur, une erreur ou une interruption. Les mises à jour de streaming ne sont jamais envoyées. Chaque texte terminé distinct attend 1,5 s avant le lancement de sa requête de traduction. La réflexion masquée (redacted), la réflexion vide, les arguments d'outils et le texte de la réponse ne sont pas traduits.
+- Chaque bloc de réflexion reçoit son propre message `omp-translate-thinking` distinct. Les messages sont publiés dans l'ordre d'achèvement des blocs, et uniquement lorsque l'agent est inactif : un résultat terminé pendant une exécution attend que l'agent devienne inactif. Les traductions de la réflexion et des réponses ne sont pas ordonnées les unes par rapport aux autres.
+- Si une nouvelle exécution démarre au moment où un résultat est publié, l'hôte place le message dans la file du tour suivant ; il apparaît alors sous le prompt suivant. La publication ne démarre ni ne réoriente (steer) jamais un tour de l'agent.
+- Les résultats sont mis en cache en mémoire (jusqu'à 500 entrées). La clé de cache comprend le modèle, la langue cible et le texte. Les textes terminés identiques partagent une même requête ; chaque occurrence reçoit tout de même son propre message.
+- Modifier les paramètres, changer de session ou en créer une branche, ou terminer la session annule le travail en attente et abandonne les résultats pas encore publiés. Les traductions déjà publiées restent.
+- Une traduction échouée affiche un avertissement (`Thinking translation failed: …`) et ne publie rien.
 - Chaque traduction dispose d'un délai de 20 s.
+- L'hôte persiste chaque traduction publiée et l'affiche de nouveau à la reprise. Cette extension filtre ces messages de chaque requête au modèle, comme pour les traductions des réponses. La reprise ne traduit pas la réflexion antérieure qui n'a pas de message de traduction.
 
 ### Traduction des réponses
 
@@ -152,16 +155,16 @@ Les étiquettes de langue sont stockées sous forme canonique. Si vous modifiez 
 
 ## Confidentialité et coût
 
-- La traduction de la réflexion envoie le texte de réflexion visible au fournisseur du modèle sélectionné. La traduction des réponses, si elle est activée, envoie les réponses finales. La traduction des prompts envoie vos prompts. Toutes consomment le quota de ce fournisseur.
-- Le seul fichier écrit par l'extension est le fichier de paramètres. Les traductions de la réflexion sont conservées uniquement en mémoire ; les traductions des réponses sont enregistrées par l'hôte dans le fichier de session.
+- La traduction de la réflexion envoie le texte de réflexion terminé au fournisseur du modèle sélectionné. La traduction des réponses, si elle est activée, envoie les réponses finales. La traduction des prompts envoie vos prompts. Toutes consomment le quota de ce fournisseur.
+- Le seul fichier écrit par l'extension est le fichier de paramètres. L'hôte enregistre les traductions publiées de la réflexion et des réponses dans le fichier de session sous forme de messages personnalisés distincts.
 - Les identifiants sont résolus par le registre de modèles d'OMP. L'extension ne lit pas les magasins de jetons et ne journalise ni les identifiants, ni le texte source, ni le texte traduit.
 
 ## Limitations
 
 - Le hook de saisie s'applique aux saisies interactives et RPC, telles que fournies par OMP.
-- Seule la réponse finale de chaque exécution de l'agent principal dans la TUI est traduite, pas le texte intermédiaire des tours avec outils.
-- Les traductions de la réflexion ne s'affichent que lorsque les blocs de réflexion sont visibles dans la TUI. Avec `hideThinkingBlock: true` (ou `--hide-thinking`), aucune réflexion n'est traduite ni affichée ; basculez la visibilité avec `Ctrl+T`. La traduction des réponses ne dépend pas de cette visibilité.
-- Les traductions de la réflexion ne sont pas persistées. Après un redémarrage, la réflexion est traduite à nouveau.
+- La traduction de la réflexion et celle des réponses ne concernent que l'agent principal dans la TUI. Seule la réponse finale terminée de chaque exécution est traduite, pas le texte intermédiaire des tours avec outils.
+- La traduction de la réflexion est indépendante de la visibilité de la réflexion : la réflexion masquée avec `hideThinkingBlock: true` (ou `--hide-thinking`) est tout de même traduite et affichée sous forme de messages distincts. Utilisez `/translate thinking off` pour l'arrêter.
+- Les traductions de la réflexion et des réponses sont persistées ; gardez l'extension chargée pour les exclure du contexte du modèle à la reprise. La réflexion des sessions enregistrées avant cette version, ou pendant que la traduction de la réflexion était désactivée, n'est pas traduite rétroactivement.
 - Les anciennes versions installées, au schéma strict, rejettent la clé `answer` : supprimez-la du fichier de paramètres avant de revenir à une version antérieure.
 
 ## Développement

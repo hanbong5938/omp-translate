@@ -6,7 +6,7 @@ Versión 0.1.0 — una extensión de traducción independiente del idioma para O
 
 ## Descripción general
 
-- **Traducción del razonamiento**: cada bloque de razonamiento (thinking) del asistente se traduce a un idioma de visualización que usted elige, y la traducción se muestra debajo del original en la TUI. El razonamiento original y el contexto del proveedor nunca se modifican.
+- **Traducción del razonamiento**: cada bloque de razonamiento (thinking) completado del asistente se traduce a un idioma de visualización que usted elige y se muestra en la TUI como un mensaje `omp-translate-thinking` independiente. El razonamiento original y el contexto del proveedor nunca se modifican.
 - **Traducción de respuestas** (opcional, desactivada por defecto): en la TUI, la respuesta final del agente principal se traduce al idioma de visualización y se muestra en un cuadro `omp-translate` independiente debajo del original. El mensaje original no se modifica.
 - **Traducción de prompts** (opcional, desactivada por defecto): los prompts salientes se traducen a un idioma de solicitud (inglés por defecto) antes de enviarse.
 
@@ -119,11 +119,14 @@ Las etiquetas de idioma se guardan en forma canónica. Si edita el archivo a man
 
 ### Traducción del razonamiento
 
-- Solo se traduce el razonamiento finalizado: texto que el host ha confirmado (un mensaje completado, un segmento cerrado por una llamada a herramienta, historial/reanudación). Las instantáneas del streaming nunca se envían. Cada texto finalizado distinto espera 1,5 s antes de que comience su solicitud de traducción.
-- Requiere un host de OMP que pase `final` a los renderizadores de razonamiento. En un host más antiguo, la traducción del razonamiento se desactiva y se muestra un error una vez por sesión: `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` La traducción de prompts y respuestas sigue funcionando.
-- Los resultados se almacenan en caché en memoria (hasta 500 entradas). La clave de caché incluye el modelo, el idioma de destino y el texto. Las vistas que muestran un texto idéntico comparten una misma solicitud.
-- Cambiar la configuración, cambiar o ramificar la sesión, o finalizar la sesión cancela el trabajo pendiente y borra las traducciones ya mostradas en pantalla.
+- Solo se traduce el razonamiento completado: los bloques de razonamiento de un mensaje del asistente del agente principal en la TUI una vez que ese mensaje ha terminado, incluidos los mensajes que terminan en una llamada a herramienta, un límite de longitud, un error o una cancelación. Las actualizaciones del streaming nunca se envían. Cada texto completado distinto espera 1,5 s antes de que comience su solicitud de traducción. El razonamiento ocultado (redacted), el razonamiento vacío, los argumentos de herramientas y el texto de la respuesta no se traducen.
+- Cada bloque de razonamiento recibe su propio mensaje `omp-translate-thinking` independiente. Los mensajes se publican en el orden en que se completaron los bloques y solo mientras el agente está inactivo: un resultado que termina durante una ejecución espera hasta que el agente quede inactivo. Las traducciones del razonamiento y de las respuestas no están ordenadas entre sí.
+- Si una nueva ejecución empieza justo cuando se publica un resultado, el host pone el mensaje en la cola del siguiente turno; entonces aparece bajo el siguiente prompt. La publicación nunca inicia ni redirige (steer) un turno del agente.
+- Los resultados se almacenan en caché en memoria (hasta 500 entradas). La clave de caché incluye el modelo, el idioma de destino y el texto. Los textos completados idénticos comparten una misma solicitud; cada aparición recibe igualmente su propio mensaje.
+- Cambiar la configuración, cambiar o ramificar la sesión, o finalizar la sesión cancela el trabajo pendiente y descarta los resultados aún no publicados. Las traducciones ya publicadas se conservan.
+- Una traducción fallida muestra una advertencia (`Thinking translation failed: …`) y no publica nada.
 - Cada traducción tiene un plazo de 20 s.
+- El host conserva cada traducción publicada y la vuelve a mostrar al reanudar. Esta extensión filtra esos mensajes de cada solicitud al modelo, igual que con las traducciones de respuestas. Al reanudar no se traduce el razonamiento anterior que no tenga mensaje de traducción.
 
 ### Traducción de respuestas
 
@@ -152,16 +155,16 @@ Las etiquetas de idioma se guardan en forma canónica. Si edita el archivo a man
 
 ## Privacidad y coste
 
-- La traducción del razonamiento envía el texto de razonamiento visible al proveedor del modelo seleccionado. La traducción de respuestas, si está activada, envía las respuestas finales. La traducción de prompts envía sus prompts. Todas consumen la cuota de ese proveedor.
-- El único archivo que escribe la extensión es el archivo de configuración. Las traducciones del razonamiento se guardan solo en memoria; las traducciones de respuestas las guarda el host en el archivo de sesión.
+- La traducción del razonamiento envía el texto de razonamiento completado al proveedor del modelo seleccionado. La traducción de respuestas, si está activada, envía las respuestas finales. La traducción de prompts envía sus prompts. Todas consumen la cuota de ese proveedor.
+- El único archivo que escribe la extensión es el archivo de configuración. El host guarda las traducciones publicadas del razonamiento y de las respuestas en el archivo de sesión como mensajes personalizados independientes.
 - Las credenciales las resuelve el registro de modelos de OMP. La extensión no lee almacenes de tokens ni registra credenciales, texto de origen ni texto traducido.
 
 ## Limitaciones
 
 - El hook de entrada se aplica a las entradas interactivas y RPC, tal como las proporciona OMP.
-- Solo se traduce la respuesta final de cada ejecución del agente principal en la TUI, no el texto intermedio de los turnos con herramientas.
-- Las traducciones del razonamiento solo se muestran mientras los bloques de razonamiento son visibles en la TUI. Con `hideThinkingBlock: true` (o `--hide-thinking`), no se traduce ni se muestra ningún razonamiento; alterne la visibilidad con `Ctrl+T`. La traducción de respuestas no depende de esta visibilidad.
-- Las traducciones del razonamiento no se conservan. Tras un reinicio, el razonamiento se vuelve a traducir.
+- La traducción del razonamiento y de las respuestas solo funciona para el agente principal en la TUI. Solo se traduce la respuesta final completada de cada ejecución, no el texto intermedio de los turnos con herramientas.
+- La traducción del razonamiento no depende de su visibilidad: el razonamiento oculto con `hideThinkingBlock: true` (o `--hide-thinking`) se sigue traduciendo y mostrando como mensajes independientes. Use `/translate thinking off` para detenerla.
+- Las traducciones del razonamiento y de las respuestas se conservan; mantenga la extensión cargada para excluirlas del contexto del modelo al reanudar. El razonamiento de sesiones registradas antes de esta versión, o mientras la traducción del razonamiento estaba desactivada, no se traduce retroactivamente.
 - Las versiones anteriores instaladas, con esquema estricto, rechazan la clave `answer`: elimínela del archivo de configuración antes de volver a una versión anterior.
 
 ## Desarrollo

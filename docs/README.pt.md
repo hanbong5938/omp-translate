@@ -6,7 +6,7 @@ Versão 0.1.0 — uma extensão de tradução independente de idioma para o OMP 
 
 ## Visão geral
 
-- **Tradução do raciocínio**: cada bloco de raciocínio (thinking) do assistente é traduzido para um idioma de exibição escolhido por você, e a tradução é mostrada abaixo do original na TUI. O raciocínio original e o contexto do provedor nunca são modificados.
+- **Tradução do raciocínio**: cada bloco de raciocínio (thinking) concluído do assistente é traduzido para um idioma de exibição escolhido por você e mostrado na TUI como uma mensagem `omp-translate-thinking` separada. O raciocínio original e o contexto do provedor nunca são modificados.
 - **Tradução de respostas** (opcional, desativada por padrão): na TUI, a resposta final do agente principal é traduzida para o idioma de exibição e mostrada em uma caixa `omp-translate` separada abaixo do original. A mensagem original não é modificada.
 - **Tradução de prompts** (opcional, desativada por padrão): os prompts enviados são traduzidos para um idioma de requisição (padrão: inglês) antes de serem enviados.
 
@@ -119,11 +119,14 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 
 ### Tradução do raciocínio
 
-- Apenas o raciocínio finalizado é traduzido: texto que o host confirmou (uma mensagem concluída, um segmento encerrado por uma chamada de ferramenta, histórico/retomada). Snapshots do streaming nunca são enviados. Cada texto finalizado distinto aguarda 1,5 s antes que sua requisição de tradução comece.
-- Requer um host OMP que passe `final` aos renderizadores de raciocínio. Em um host mais antigo, a tradução do raciocínio é desativada e um erro é exibido uma vez por sessão: `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` A tradução de prompts e respostas continua funcionando.
-- Os resultados são armazenados em cache na memória (até 500 entradas). A chave do cache inclui o modelo, o idioma de destino e o texto. Visualizações que exibem texto idêntico compartilham uma única requisição.
-- Alterar as configurações, trocar ou ramificar a sessão, ou encerrar a sessão cancela o trabalho pendente e limpa as traduções já exibidas na tela.
+- Apenas o raciocínio concluído é traduzido: os blocos de raciocínio de uma mensagem do assistente do agente principal na TUI depois que essa mensagem termina, incluindo mensagens que terminam em uma chamada de ferramenta, limite de tamanho, erro ou interrupção. Atualizações do streaming nunca são enviadas. Cada texto concluído distinto aguarda 1,5 s antes que sua requisição de tradução comece. Raciocínio ocultado (redacted), raciocínio vazio, argumentos de ferramentas e texto da resposta não são traduzidos.
+- Cada bloco de raciocínio recebe sua própria mensagem `omp-translate-thinking` separada. As mensagens são publicadas na ordem em que os blocos foram concluídos, e somente enquanto o agente está ocioso: um resultado concluído durante uma execução aguarda até o agente ficar ocioso. As traduções do raciocínio e das respostas não têm ordem garantida entre si.
+- Se uma nova execução começar no momento em que um resultado é publicado, o host coloca a mensagem na fila do próximo turno; ela então aparece sob o próximo prompt. A publicação nunca inicia nem redireciona (steer) um turno do agente.
+- Os resultados são armazenados em cache na memória (até 500 entradas). A chave do cache inclui o modelo, o idioma de destino e o texto. Textos concluídos idênticos compartilham uma única requisição; cada ocorrência ainda recebe sua própria mensagem.
+- Alterar as configurações, trocar ou ramificar a sessão, ou encerrar a sessão cancela o trabalho pendente e descarta os resultados ainda não publicados. As traduções já publicadas permanecem.
+- Uma tradução com falha mostra um aviso (`Thinking translation failed: …`) e não publica nada.
 - Cada tradução tem um prazo de 20 s.
+- O host persiste cada tradução publicada e a exibe novamente ao retomar. Esta extensão filtra essas mensagens de toda requisição ao modelo, assim como faz com as traduções de respostas. Retomar não traduz o raciocínio anterior que não tenha mensagem de tradução.
 
 ### Tradução de respostas
 
@@ -152,16 +155,16 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 
 ## Privacidade e custo
 
-- A tradução do raciocínio envia o texto de raciocínio visível ao provedor do modelo selecionado. A tradução de respostas, quando ativada, envia as respostas finais. A tradução de prompts envia seus prompts. Todas consomem a cota desse provedor.
-- O único arquivo que a extensão escreve é o arquivo de configurações. As traduções do raciocínio são mantidas apenas na memória; as traduções de respostas são salvas pelo host no arquivo de sessão.
+- A tradução do raciocínio envia o texto de raciocínio concluído ao provedor do modelo selecionado. A tradução de respostas, quando ativada, envia as respostas finais. A tradução de prompts envia seus prompts. Todas consomem a cota desse provedor.
+- O único arquivo que a extensão escreve é o arquivo de configurações. O host salva as traduções publicadas do raciocínio e das respostas no arquivo de sessão como mensagens personalizadas separadas.
 - As credenciais são resolvidas pelo registro de modelos do OMP. A extensão não lê armazenamentos de tokens e não registra em log credenciais, texto de origem nem texto traduzido.
 
 ## Limitações
 
 - O hook de entrada se aplica às entradas interativas e RPC, conforme fornecidas pelo OMP.
-- Apenas a resposta final de cada execução do agente principal na TUI é traduzida, não o texto intermediário de turnos com ferramentas.
-- As traduções do raciocínio só são renderizadas enquanto os blocos de raciocínio estão visíveis na TUI. Com `hideThinkingBlock: true` (ou `--hide-thinking`), nenhum raciocínio é traduzido nem exibido; alterne a visibilidade com `Ctrl+T`. A tradução de respostas não depende dessa visibilidade.
-- As traduções do raciocínio não são persistidas. Após uma reinicialização, o raciocínio é traduzido novamente.
+- As traduções do raciocínio e das respostas funcionam apenas para o agente principal na TUI. Apenas a resposta final concluída de cada execução é traduzida, não o texto intermediário de turnos com ferramentas.
+- A tradução do raciocínio é independente da visibilidade do raciocínio: o raciocínio oculto com `hideThinkingBlock: true` (ou `--hide-thinking`) continua sendo traduzido e mostrado como mensagens separadas. Use `/translate thinking off` para interrompê-la.
+- As traduções do raciocínio e das respostas são persistidas; mantenha a extensão carregada para excluí-las do contexto do modelo ao retomar. O raciocínio de sessões gravadas antes desta versão, ou enquanto a tradução do raciocínio estava desativada, não é traduzido retroativamente.
 - Versões antigas instaladas, com esquema estrito, rejeitam a chave `answer`: remova-a do arquivo de configurações antes de fazer downgrade.
 
 ## Desenvolvimento

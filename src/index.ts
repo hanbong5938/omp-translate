@@ -2,8 +2,6 @@ import path from "node:path";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
-import { Text } from "@oh-my-pi/pi-tui";
-import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { TranslationSettings } from "./settings.ts";
 import {
 	canonicalizeLanguageTag,
@@ -54,10 +52,16 @@ const LANGUAGE_CHOICES: readonly { label: string; tag: string }[] = [
 const CUSTOM_LANGUAGE_LABEL = "Custom language tag";
 const SETUP_TITLE = "omp-translate: choose a language for translated thinking";
 const QUOTA_NOTICE =
-	"omp-translate sends visible thinking and enabled answer translations to your selected translation model's provider, which uses its quota.";
+	"omp-translate sends completed thinking and enabled answer translations to your selected translation model's provider, which uses its quota.";
 
 /** Custom message type of answer translations; shown as the box header and filtered from every provider request. */
 export const ANSWER_CUSTOM_TYPE = "omp-translate";
+
+/** Custom message type of completed-thinking translations; shown as the box header and filtered from every provider request. */
+export const THINKING_CUSTOM_TYPE = "omp-translate-thinking";
+
+/** Poll interval while a ready thinking translation waits for the agent to become idle. */
+const THINKING_IDLE_POLL_MS = 250;
 
 const COMMAND_DESCRIPTION =
 	"Translate thinking, answers, and prompts: status, setup, thinking, answer, request, language, request-language, model, request-model";
@@ -93,61 +97,6 @@ const COMPLETIONS: readonly string[] = [
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-function renderState(state: ThinkingViewState, theme: Theme): string {
-	switch (state.kind) {
-		case "pending":
-			return theme.fg("dim", "Translating…");
-		case "done":
-			return theme.fg("dim", state.text);
-		case "failed":
-			return theme.fg("dim", `(translation failed: ${state.error})`);
-		case "cleared":
-			return "";
-	}
-}
-
-/** Dead weak refs are pruned whenever the tracked set reaches this size. */
-const MOUNTED_PRUNE_THRESHOLD = 256;
-
-/**
- * Weakly tracks mounted translation components so settings changes and shutdown can blank every one of them,
- * including completed ones. The host discards rebuilt components without notice, so nothing here keeps them alive.
- */
-class MountedViews {
-	readonly #refs = new Set<WeakRef<Text>>();
-	readonly #clearers = new WeakMap<Text, () => void>();
-	readonly #onError: (error: unknown) => void;
-
-	constructor(onError: (error: unknown) => void) {
-		this.#onError = onError;
-	}
-
-	track(view: Text, clear: () => void): void {
-		if (this.#refs.size >= MOUNTED_PRUNE_THRESHOLD) {
-			for (const ref of this.#refs) if (ref.deref() === undefined) this.#refs.delete(ref);
-		}
-		this.#refs.add(new WeakRef(view));
-		this.#clearers.set(view, clear);
-	}
-
-	/** Blanks every live tracked component, then forgets them all (a host rebuild re-invokes the renderer). */
-	clearAll(): void {
-		const refs = [...this.#refs];
-		this.#refs.clear();
-		for (const ref of refs) {
-			const view = ref.deref();
-			if (view === undefined) continue;
-			const clear = this.#clearers.get(view);
-			this.#clearers.delete(view);
-			try {
-				clear?.();
-			} catch (error) {
-				this.#onError(error);
-			}
-		}
-	}
-}
-
 function defaultCreateCaller(model: Model<Api>, ctx: ExtensionContext): ModelCaller {
 	return createModelCaller(model, ctx.modelRegistry.resolver(model, ctx.sessionManager.getSessionId()));
 }
@@ -174,8 +123,16 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		let heldAnswers: { epoch: number; text: string; targetLanguage: string }[] = [];
 		/** Bumped whenever the active main session changes or ends; in-flight prompt/answer translations compare against it. */
 		let sessionEpoch = 0;
-		/** Set once the missing-`final` host error has been shown this session; reset on session start/change/end. */
-		let reportedMissingFinal = false;
+
+		type ThinkingOutput = {
+			epoch: number;
+			generation: number;
+			targetLanguage: string;
+			state: ThinkingViewState;
+		};
+		/** Completed-thinking translations in completion/block order; posted from the head only while idle. */
+		let thinkingOutputs: ThinkingOutput[] = [];
+		let thinkingDrainTimer: ManagedTimer | undefined;
 
 		const timers: TimerHost = {
 			setTimeout(callback, ms) {
@@ -193,12 +150,18 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			pi.logger.warn("omp-translate: background error", { error: errorMessage(error) });
 		};
 		const translator = new ThinkingTranslator({ timers, onBackgroundError: reportBackgroundError });
-		const mountedViews = new MountedViews(reportBackgroundError);
 
-		/** Drops every pending/cached translation and blanks every mounted component (pending, done, failed). */
+		function cancelThinkingDrain(): void {
+			const handle = thinkingDrainTimer;
+			thinkingDrainTimer = undefined;
+			if (handle) handle.owner.clearTimer(handle.timer);
+		}
+
+		/** Drops unposted thinking translations, the idle drain, and every pending/cached translation. */
 		function resetTranslations(): void {
+			thinkingOutputs = [];
+			cancelThinkingDrain();
 			translator.invalidate();
-			mountedViews.clearAll();
 		}
 
 		/** Marks in-flight prompt/answer translations stale, aborts them, and drops held answers and thinking translations. */
@@ -209,7 +172,6 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			for (const controller of answerControllers) controller.abort();
 			answerControllers.clear();
 			heldAnswers = [];
-			reportedMissingFinal = false;
 			resetTranslations();
 		}
 
@@ -294,6 +256,99 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 				text,
 				run: signal => translateText(createCaller(model, ctx), systemPrompt, text, signal),
 			};
+		}
+
+		const isCurrentThinking = (item: ThinkingOutput): boolean =>
+			item.epoch === sessionEpoch && item.generation === translator.generation;
+
+		/** Single idle-drain timer: re-flushes shortly so a ready result posts once the agent goes idle. */
+		function scheduleThinkingDrain(): void {
+			if (thinkingDrainTimer) return;
+			const owner = boundCtx;
+			if (!owner) return;
+			const epoch = sessionEpoch;
+			const generation = translator.generation;
+			thinkingDrainTimer = {
+				owner,
+				timer: owner.setTimeout(() => {
+					thinkingDrainTimer = undefined;
+					try {
+						if (epoch === sessionEpoch && generation === translator.generation) flushThinkingOutputs();
+					} catch (error) {
+						reportBackgroundError(error);
+					}
+				}, THINKING_IDLE_POLL_MS),
+			};
+		}
+
+		/** Posts ready thinking translations in order while idle; failures warn; stale slots are dropped. */
+		function flushThinkingOutputs(): void {
+			while (thinkingOutputs.length > 0) {
+				const ctx = boundCtx;
+				const item = thinkingOutputs[0]!;
+				if (!ctx || !isCurrentThinking(item)) {
+					thinkingOutputs.shift();
+					continue;
+				}
+				const state = item.state;
+				if (state.kind === "pending") break;
+				if (state.kind === "cleared") {
+					thinkingOutputs.shift();
+					continue;
+				}
+				if (state.kind === "failed") {
+					thinkingOutputs.shift();
+					ctx.ui.notify(`Thinking translation failed: ${state.error}`, "warning");
+					continue;
+				}
+				const settings = store.settings;
+				if (!settings || !settings.thinking || !isConfigured(settings)) {
+					thinkingOutputs.shift();
+					continue;
+				}
+				if (!ctx.isIdle()) {
+					scheduleThinkingDrain();
+					return;
+				}
+				thinkingOutputs.shift();
+				try {
+					pi.sendMessage(
+						{
+							customType: THINKING_CUSTOM_TYPE,
+							content: state.text,
+							display: true,
+							details: { targetLanguage: item.targetLanguage },
+						},
+						{ deliverAs: "nextTurn", triggerTurn: false },
+					);
+				} catch (error) {
+					ctx.ui.notify(`Thinking translation could not be posted: ${errorMessage(error)}`, "warning");
+				}
+			}
+			cancelThinkingDrain();
+		}
+
+		/** Queues one completed thinking block; the translation result is applied to its slot and flushed in order. */
+		function enqueueThinking(text: string, ctx: ExtensionContext, settings: TranslationSettings): void {
+			const item: ThinkingOutput = {
+				epoch: sessionEpoch,
+				generation: translator.generation,
+				targetLanguage: settings.targetLanguage,
+				state: { kind: "pending" },
+			};
+			thinkingOutputs.push(item);
+			const update = (state: ThinkingViewState): void => {
+				if (!isCurrentThinking(item)) return;
+				item.state = state;
+				flushThinkingOutputs();
+			};
+			let initial: ThinkingViewState;
+			try {
+				initial = translator.attach(thinkingRequest(ctx, settings, text), update);
+			} catch (error) {
+				initial = { kind: "failed", error: errorMessage(error) };
+			}
+			update(initial);
 		}
 
 		function modelLine(ctx: ExtensionContext, selector: string): string {
@@ -390,7 +445,6 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		pi.on("session_start", async (_event, ctx) => {
 			if (ctx.agent.kind !== "main") return;
 			boundCtx = ctx;
-			reportedMissingFinal = false;
 			await initialLoad;
 			if (boundCtx !== ctx) return;
 			const settings = store.settings;
@@ -419,36 +473,20 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			boundCtx = undefined;
 		});
 
-		pi.registerAssistantThinkingRenderer((rc, theme) => {
-			const ctx = boundCtx;
-			const settings = store.settings;
-			if (!ctx || !settings || !settings.thinking || !isConfigured(settings) || !rc.text.trim()) return undefined;
-			// `final` is not declared by the installed host types; older hosts omit it and cannot be supported.
-			const final = "final" in rc ? rc.final : undefined;
-			if (typeof final !== "boolean") {
-				if (!reportedMissingFinal) {
-					reportedMissingFinal = true;
-					report(
-						ctx,
-						"omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.",
-						"error",
-					);
+		// Synchronous: completed thinking is queued; translation and posting happen in the background.
+		pi.on("message_end", (event, ctx) => {
+			try {
+				if (ctx.agent.kind !== "main" || ctx.mode !== "tui" || !boundCtx) return;
+				const settings = store.settings;
+				if (!settings || !settings.thinking || !isConfigured(settings)) return;
+				const message = event.message;
+				if (message.role !== "assistant") return;
+				for (const block of message.content) {
+					if (block.type === "thinking" && block.thinking.trim() !== "") enqueueThinking(block.thinking, ctx, settings);
 				}
-				return undefined;
+			} catch (error) {
+				reportBackgroundError(error);
 			}
-			// Streaming (non-final) segments are never translated; only confirmed display segments are.
-			if (!final) return undefined;
-			const view = new Text("", 1, 0);
-			const initial = translator.attach(thinkingRequest(ctx, settings, rc.text), state => {
-				view.setText(renderState(state, theme));
-				rc.requestRender();
-			});
-			view.setText(renderState(initial, theme));
-			mountedViews.track(view, () => {
-				view.setText("");
-				rc.requestRender();
-			});
-			return view;
 		});
 
 		pi.on("input", async (event, ctx) => {
@@ -513,6 +551,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		// Synchronous: the translation runs in the background so the 30 s handler timeout never applies.
 		pi.on("agent_end", (event, ctx) => {
 			if (ctx.agent.kind !== "main" || ctx.mode !== "tui") return;
+			flushThinkingOutputs();
 			flushHeldAnswers(ctx);
 			if (event.willContinue === true) return;
 			const settings = store.settings;
@@ -545,10 +584,14 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 				});
 		});
 
-		// Unconditional: answer translations are display-only and must never reach any provider request.
+		// Unconditional: translations are display-only and must never reach any provider request.
 		pi.on("context", event => {
 			const kept = event.messages.filter(
-				message => !(message.role === "custom" && message.customType === ANSWER_CUSTOM_TYPE),
+				message =>
+					!(
+						message.role === "custom" &&
+						(message.customType === ANSWER_CUSTOM_TYPE || message.customType === THINKING_CUSTOM_TYPE)
+					),
 			);
 			return kept.length === event.messages.length ? undefined : { messages: kept };
 		});

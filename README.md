@@ -6,7 +6,7 @@ Version 0.1.0 — a language-neutral translation extension for OMP (the oh-my-pi
 
 ## Overview
 
-- **Thinking translation**: each assistant thinking block is translated into a display language you choose, and the translation is shown beneath the original in the TUI. The original thinking and the provider context are never modified.
+- **Thinking translation**: each completed assistant thinking block is translated into a display language you choose and shown in the TUI as a separate `omp-translate-thinking` message. The original thinking and the provider context are never modified.
 - **Answer translation** (optional, off by default): each completed main-agent final answer gets a separate translated `omp-translate` box in the TUI. The original answer stays unchanged; the translation is excluded from future model requests while this extension is loaded.
 - **Prompt translation** (optional, off by default): outgoing prompts are translated into a request language (default English) before they are sent.
 
@@ -124,11 +124,14 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 
 ### Thinking translation
 
-- Only finalized thinking is translated: text the host has confirmed (a completed message, a segment closed by a tool call, history/resume). Streaming snapshots are never sent. Each distinct finalized text waits 1.5 s before its translation request starts.
-- Requires an OMP host that passes `final` to thinking renderers. On an older host, thinking translation is disabled and an error is shown once per session: `omp-translate: thinking translation requires an OMP host with finalized thinking renders; update OMP.` Prompt and answer translation keep working.
-- Results are cached in memory (up to 500 entries). The cache key includes the model, target language, and text. Views showing identical text share one request.
-- Changing settings, switching or branching the session, or ending the session cancels pending work and clears translations already on screen.
+- Only completed thinking is translated: the thinking blocks of a main-agent TUI assistant message once that message has ended, including messages that end in a tool call, length limit, error, or abort. Streaming updates are never sent. Each distinct completed text waits 1.5 s before its translation request starts. Redacted thinking, empty thinking, tool arguments, and answer text are not translated.
+- Each thinking block gets its own separate `omp-translate-thinking` message. Messages are posted in the order the blocks completed, and only while the agent is idle: a result that finishes during a run waits until the agent becomes idle. Thinking and answer translations are not ordered relative to each other.
+- If a new run starts at the moment a result is posted, the host queues the message for the next turn instead; it then appears under the next prompt. Posting never starts or steers an agent turn.
+- Results are cached in memory (up to 500 entries). The cache key includes the model, target language, and text. Identical completed texts share one request; each occurrence still gets its own message.
+- Changing settings, switching or branching the session, or ending the session cancels pending work and drops results not yet posted. Already posted translations remain.
+- A failed translation shows a warning (`Thinking translation failed: …`) and posts nothing.
 - Each translation has a 20 s deadline.
+- The host persists each posted translation and displays it again on resume. This extension filters those messages from every model request, as it does for answer translations. Resuming does not translate earlier thinking that has no translation message.
 
 ### Answer translation
 
@@ -155,16 +158,16 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 
 ## Privacy & cost
 
-- Thinking translation sends visible thinking to the selected model provider. Enabled answer translation sends final-answer text; prompt translation sends your prompts. All use that provider's quota.
-- The extension writes its settings file (plus, on macOS and similar platforms, an empty `omp-translate.json.lock` next to it for file locking). Thinking translations stay in memory; the host stores answer translations in session history as separate custom messages.
+- Thinking translation sends completed thinking to the selected model provider. Enabled answer translation sends final-answer text; prompt translation sends your prompts. All use that provider's quota.
+- The extension writes its settings file (plus, on macOS and similar platforms, an empty `omp-translate.json.lock` next to it for file locking). The host stores posted thinking and answer translations in session history as separate custom messages.
 - Credentials are resolved by OMP's model registry. The extension does not read token stores and does not log credentials, source text, or translated text.
 
 ## Limitations
 
 - The input hook applies to interactive and RPC inputs, as OMP provides them.
-- Answer translation is main-agent TUI only and requires a completed final answer.
-- Thinking translations render only while thinking blocks are visible in the TUI. With `hideThinkingBlock: true` (or `--hide-thinking`), no thinking is translated or shown; toggle visibility with `Ctrl+T`. Answer translation is independent of thinking visibility.
-- Thinking translations are not persisted and are translated again after restart. Answer translations are persisted; keep the extension loaded to exclude them from model context on resume.
+- Thinking and answer translation are main-agent TUI only. Answer translation requires a completed final answer.
+- Thinking translation is independent of thinking visibility: thinking hidden with `hideThinkingBlock: true` (or `--hide-thinking`) is still translated and shown as separate messages. Use `/translate thinking off` to stop it.
+- Thinking and answer translations are persisted; keep the extension loaded to exclude them from model context on resume. Thinking from sessions recorded before this version, or while thinking translation was off, is not translated retroactively.
 
 ## Development
 

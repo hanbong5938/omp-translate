@@ -6,7 +6,7 @@ Version 0.1.0 — eine sprachneutrale Übersetzungserweiterung für OMP (den Cod
 
 ## Überblick
 
-- **Übersetzung des Denkprozesses**: Jeder Thinking-Block des Assistenten wird in eine von Ihnen gewählte Anzeigesprache übersetzt, und die Übersetzung wird in der TUI unter dem Original angezeigt. Der ursprüngliche Denktext und der Provider-Kontext werden nie verändert.
+- **Übersetzung des Denkprozesses**: Jeder abgeschlossene Thinking-Block des Assistenten wird in eine von Ihnen gewählte Anzeigesprache übersetzt und in der TUI als separate `omp-translate-thinking`-Nachricht angezeigt. Der ursprüngliche Denktext und der Provider-Kontext werden nie verändert.
 - **Antwort-Übersetzung** (optional, standardmäßig deaktiviert): In der TUI wird die finale Antwort des Hauptagenten in die Anzeigesprache übersetzt und in einem separaten `omp-translate`-Kasten unter dem Original angezeigt. Die Originalnachricht bleibt unverändert.
 - **Prompt-Übersetzung** (optional, standardmäßig deaktiviert): Ausgehende Prompts werden vor dem Senden in eine Anfragesprache (standardmäßig Englisch) übersetzt.
 
@@ -119,10 +119,14 @@ Sprach-Tags werden in kanonischer Form gespeichert. Wenn Sie die Datei von Hand 
 
 ### Übersetzung des Denkprozesses
 
-- Für jeden unterschiedlichen Denktext wird 1,5 s gewartet, bevor seine Übersetzungsanfrage startet. Unterschiedliche Streaming-Snapshots sind unabhängige Anfragen, sodass ein langer gestreamter Block mehrere Modellaufrufe auslösen kann.
-- Ergebnisse werden im Speicher zwischengespeichert (bis zu 500 Einträge). Der Cache-Schlüssel umfasst Modell, Zielsprache und Text. Ansichten mit identischem Text teilen sich eine Anfrage.
-- Das Ändern von Einstellungen, das Wechseln oder Verzweigen der Sitzung oder das Beenden der Sitzung bricht ausstehende Arbeit ab und entfernt bereits angezeigte Übersetzungen.
+- Übersetzt wird nur abgeschlossenes Denken: die Thinking-Blöcke einer TUI-Assistentennachricht des Hauptagenten, sobald diese Nachricht beendet ist, auch wenn sie mit einem Tool-Aufruf, einem Längenlimit, einem Fehler oder einem Abbruch endet. Streaming-Aktualisierungen werden nie gesendet. Für jeden unterschiedlichen abgeschlossenen Text wird 1,5 s gewartet, bevor seine Übersetzungsanfrage startet. Geschwärztes (redacted) Denken, leeres Denken, Tool-Argumente und Antworttext werden nicht übersetzt.
+- Jeder Thinking-Block erhält eine eigene, separate `omp-translate-thinking`-Nachricht. Nachrichten werden in der Reihenfolge veröffentlicht, in der die Blöcke abgeschlossen wurden, und nur, solange der Agent untätig ist: Ein Ergebnis, das während eines Laufs fertig wird, wartet, bis der Agent untätig wird. Übersetzungen des Denkprozesses und Antwort-Übersetzungen sind nicht relativ zueinander geordnet.
+- Startet genau beim Veröffentlichen eines Ergebnisses ein neuer Lauf, stellt der Host die Nachricht stattdessen für den nächsten Turn in die Warteschlange; sie erscheint dann unter dem nächsten Prompt. Das Veröffentlichen startet oder steuert (steer) nie einen Agenten-Turn.
+- Ergebnisse werden im Speicher zwischengespeichert (bis zu 500 Einträge). Der Cache-Schlüssel umfasst Modell, Zielsprache und Text. Identische abgeschlossene Texte teilen sich eine Anfrage; jedes Vorkommen erhält trotzdem eine eigene Nachricht.
+- Das Ändern von Einstellungen, das Wechseln oder Verzweigen der Sitzung oder das Beenden der Sitzung bricht ausstehende Arbeit ab und verwirft noch nicht veröffentlichte Ergebnisse. Bereits veröffentlichte Übersetzungen bleiben erhalten.
+- Eine fehlgeschlagene Übersetzung zeigt eine Warnung (`Thinking translation failed: …`) und veröffentlicht nichts.
 - Jede Übersetzung hat eine Frist von 20 s.
+- Der Host speichert jede veröffentlichte Übersetzung dauerhaft und zeigt sie beim Fortsetzen erneut an. Diese Erweiterung filtert diese Nachrichten, wie bei Antwort-Übersetzungen, aus jeder Modellanfrage heraus. Beim Fortsetzen wird früheres Denken ohne Übersetzungsnachricht nicht übersetzt.
 
 ### Antwort-Übersetzung
 
@@ -151,16 +155,16 @@ Sprach-Tags werden in kanonischer Form gespeichert. Wenn Sie die Datei von Hand 
 
 ## Datenschutz & Kosten
 
-- Die Übersetzung des Denkprozesses sendet den sichtbaren Denktext an den ausgewählten Modell-Provider. Die Antwort-Übersetzung sendet, sofern aktiviert, die finalen Antworten. Die Prompt-Übersetzung sendet Ihre Prompts. Alle verbrauchen das Kontingent dieses Providers.
-- Die einzige Datei, die die Erweiterung schreibt, ist die Einstellungsdatei. Übersetzungen des Denkprozesses werden nur im Speicher gehalten; Antwort-Übersetzungen speichert der Host in der Sitzungsdatei.
+- Die Übersetzung des Denkprozesses sendet den abgeschlossenen Denktext an den ausgewählten Modell-Provider. Die Antwort-Übersetzung sendet, sofern aktiviert, die finalen Antworten. Die Prompt-Übersetzung sendet Ihre Prompts. Alle verbrauchen das Kontingent dieses Providers.
+- Die einzige Datei, die die Erweiterung schreibt, ist die Einstellungsdatei. Veröffentlichte Übersetzungen des Denkprozesses und Antwort-Übersetzungen speichert der Host als separate benutzerdefinierte Nachrichten in der Sitzungsdatei.
 - Zugangsdaten werden von der Modell-Registry von OMP aufgelöst. Die Erweiterung liest keine Token-Speicher und protokolliert weder Zugangsdaten noch Quelltext oder übersetzten Text.
 
 ## Einschränkungen
 
 - Der Eingabe-Hook gilt für interaktive und RPC-Eingaben, so wie OMP sie bereitstellt.
-- Übersetzt wird nur die finale Antwort jedes Laufs des Hauptagenten in der TUI, nicht der Zwischentext von Turns mit Tools.
-- Übersetzungen des Denkprozesses werden nur angezeigt, solange Thinking-Blöcke in der TUI sichtbar sind. Mit `hideThinkingBlock: true` (oder `--hide-thinking`) wird kein Denkprozess übersetzt oder angezeigt; die Sichtbarkeit lässt sich mit `Ctrl+T` umschalten. Die Antwort-Übersetzung ist davon unabhängig.
-- Übersetzungen des Denkprozesses werden nicht dauerhaft gespeichert. Nach einem Neustart wird der Denkprozess erneut übersetzt.
+- Übersetzung des Denkprozesses und Antwort-Übersetzung gelten nur für den Hauptagenten in der TUI. Übersetzt wird nur die abgeschlossene finale Antwort jedes Laufs, nicht der Zwischentext von Turns mit Tools.
+- Die Übersetzung des Denkprozesses ist unabhängig von der Sichtbarkeit des Denkens: Mit `hideThinkingBlock: true` (oder `--hide-thinking`) ausgeblendetes Denken wird trotzdem übersetzt und als separate Nachricht angezeigt. Mit `/translate thinking off` lässt sie sich abschalten.
+- Übersetzungen des Denkprozesses und Antwort-Übersetzungen werden dauerhaft gespeichert; lassen Sie die Erweiterung geladen, damit sie beim Fortsetzen aus dem Modellkontext ausgeschlossen werden. Denken aus Sitzungen, die vor dieser Version oder bei ausgeschalteter Übersetzung des Denkprozesses aufgezeichnet wurden, wird nicht rückwirkend übersetzt.
 - Ältere installierte Versionen mit striktem Schema lehnen den Schlüssel `answer` ab: Entfernen Sie ihn vor einem Downgrade aus der Einstellungsdatei.
 
 ## Entwicklung

@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Translate OMP thinking, final answers, and outgoing prompts using your configured models.",
-    "version": "0.1.4"
+    "version": "0.1.5"
   },
   "plugins": [
     {
       "name": "omp-translate",
       "description": "Translate OMP thinking, final answers, and outgoing prompts using your configured models.",
       "source": "./",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "category": "productivity",
       "keywords": [
         "omp",
