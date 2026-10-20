@@ -123,6 +123,10 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		let heldAnswers: { epoch: number; text: string; targetLanguage: string }[] = [];
 		/** Bumped whenever the active main session changes or ends; in-flight prompt/answer translations compare against it. */
 		let sessionEpoch = 0;
+		let thinkingRefused = false;
+		let answerFallback = false;
+		/** Latest completed answer awaiting a possible late thinking refusal. Consumed once. */
+		let fallbackAnswer: { text: string; ctx: ExtensionContext } | undefined;
 
 		type ThinkingOutput = {
 			epoch: number;
@@ -167,6 +171,9 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 		/** Marks in-flight prompt/answer translations stale, aborts them, and drops held answers and thinking translations. */
 		function invalidateSessionWork(): void {
 			sessionEpoch++;
+			thinkingRefused = false;
+			answerFallback = false;
+			fallbackAnswer = undefined;
 			for (const controller of inputControllers) controller.abort();
 			inputControllers.clear();
 			for (const controller of answerControllers) controller.abort();
@@ -339,6 +346,20 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			thinkingOutputs.push(item);
 			const update = (state: ThinkingViewState): void => {
 				if (!isCurrentThinking(item)) return;
+				if (state.kind === "failed" && /\bRefusal\s*\(reasoning_extraction\)/i.test(state.error)) {
+					thinkingRefused = true;
+					answerFallback = true;
+					resetTranslations();
+					ctx.ui.notify(
+						"Thinking translation paused for this session: the provider refused reasoning extraction. Final-answer translation is now enabled for this session; use /translate answer off to disable it. Saved settings are unchanged.",
+						"warning",
+					);
+					const answer = fallbackAnswer;
+					fallbackAnswer = undefined;
+					const current = store.settings;
+					if (answer && current && isConfigured(current)) startAnswerTranslation(answer.text, answer.ctx, current);
+					return;
+				}
 				item.state = state;
 				flushThinkingOutputs();
 			};
@@ -365,8 +386,8 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			const target = isConfigured(settings) ? describeLanguage(settings.targetLanguage) : "not selected";
 			ctx.ui.notify(
 				[
-					`Thinking translation: ${settings.thinking ? "on" : "off"}`,
-					`Answer translation: ${settings.answer ? "on" : "off"}`,
+					`Thinking translation: ${thinkingRefused ? "paused (provider refusal, this session)" : settings.thinking ? "on" : "off"}`,
+					`Answer translation: ${settings.answer || answerFallback ? "on" : "off"}${answerFallback ? " (session fallback)" : ""}`,
 					`Prompt translation: ${settings.request ? "on" : "off"}`,
 					`Target language: ${target}`,
 					`Request language: ${describeLanguage(settings.requestLanguage)}`,
@@ -386,6 +407,8 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 				ctx.ui.notify(`omp-translate: could not save settings: ${errorMessage(error)}`, "error");
 				return;
 			}
+			if (patch.answer !== undefined) answerFallback = false;
+			fallbackAnswer = undefined;
 			resetTranslations();
 			showStatus(ctx);
 		}
@@ -478,7 +501,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			try {
 				if (ctx.agent.kind !== "main" || ctx.mode !== "tui" || !boundCtx) return;
 				const settings = store.settings;
-				if (!settings || !settings.thinking || !isConfigured(settings)) return;
+				if (!settings || !settings.thinking || thinkingRefused || !isConfigured(settings)) return;
 				const message = event.message;
 				if (message.role !== "assistant") return;
 				for (const block of message.content) {
@@ -548,16 +571,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			}
 		}
 
-		// Synchronous: the translation runs in the background so the 30 s handler timeout never applies.
-		pi.on("agent_end", (event, ctx) => {
-			if (ctx.agent.kind !== "main" || ctx.mode !== "tui") return;
-			flushThinkingOutputs();
-			flushHeldAnswers(ctx);
-			if (event.willContinue === true) return;
-			const settings = store.settings;
-			if (!settings || !settings.answer || !isConfigured(settings)) return;
-			const text = finalAnswerText(event.messages);
-			if (text === undefined) return;
+		function startAnswerTranslation(text: string, ctx: ExtensionContext, settings: TranslationSettings): void {
 			const selector = thinkingModelSelector(settings);
 			const model = ctx.models.resolve(selector);
 			if (!model) {
@@ -571,7 +585,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			const isStale = (): boolean => epoch !== sessionEpoch || controller.signal.aborted;
 			translateAnswer(createCaller(model, ctx), buildAnswerPrompt(targetLanguage), text, controller.signal)
 				.then(translated => {
-					if (isStale() || store.settings?.answer !== true || translated.trim() === text) return;
+					if (isStale() || (!store.settings?.answer && !answerFallback) || translated.trim() === text) return;
 					if (ctx.isIdle()) postAnswer(translated, targetLanguage);
 					else heldAnswers.push({ epoch, text: translated, targetLanguage });
 				})
@@ -582,6 +596,21 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 				.finally(() => {
 					answerControllers.delete(controller);
 				});
+		}
+
+		// Synchronous: the translation runs in the background so the 30 s handler timeout never applies.
+		pi.on("agent_end", (event, ctx) => {
+			if (ctx.agent.kind !== "main" || ctx.mode !== "tui") return;
+			flushThinkingOutputs();
+			flushHeldAnswers(ctx);
+			if (event.willContinue === true) return;
+			fallbackAnswer = undefined;
+			const settings = store.settings;
+			if (!settings || !isConfigured(settings)) return;
+			const text = finalAnswerText(event.messages);
+			if (text === undefined) return;
+			if (settings.answer || answerFallback) startAnswerTranslation(text, ctx, settings);
+			else if (settings.thinking && !thinkingRefused) fallbackAnswer = { text, ctx };
 		});
 
 		// Unconditional: translations are display-only and must never reach any provider request.

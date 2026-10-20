@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Español](README.es.md) | [Français](README.fr.md) | **Deutsch** | [Português](README.pt.md)
 
-Version 0.1.0 — eine sprachneutrale Übersetzungserweiterung für OMP (den Coding-Agenten oh-my-pi).
+Version 0.1.6 — eine sprachneutrale Übersetzungserweiterung für OMP (den Coding-Agenten oh-my-pi).
 
 ## Überblick
 
@@ -125,6 +125,7 @@ Sprach-Tags werden in kanonischer Form gespeichert. Wenn Sie die Datei von Hand 
 - Ergebnisse werden im Speicher zwischengespeichert (bis zu 500 Einträge). Der Cache-Schlüssel umfasst Modell, Zielsprache und Text. Identische abgeschlossene Texte teilen sich eine Anfrage; jedes Vorkommen erhält trotzdem eine eigene Nachricht.
 - Das Ändern von Einstellungen, das Wechseln oder Verzweigen der Sitzung oder das Beenden der Sitzung bricht ausstehende Arbeit ab und verwirft noch nicht veröffentlichte Ergebnisse. Bereits veröffentlichte Übersetzungen bleiben erhalten.
 - Eine fehlgeschlagene Übersetzung zeigt eine Warnung (`Thinking translation failed: …`) und veröffentlicht nichts.
+- Bei `Refusal (reasoning_extraction)` wird die Denkübersetzung für den Rest der Sitzung pausiert, ausstehende Arbeit abgebrochen und einmal gewarnt. Stattdessen werden finale Antworten übersetzt, bei später Ablehnung auch die letzte abgeschlossene Antwort. Gespeicherte Einstellungen bleiben unverändert. `/translate status` zeigt den Zustand; `/translate answer off` deaktiviert diesen Ersatz. Sitzungswechsel, Verzweigen oder Beenden setzt die temporären Änderungen zurück. Andere Fehler lösen dies nicht aus.
 - Jede Übersetzung hat eine Frist von 20 s.
 - Der Host speichert jede veröffentlichte Übersetzung dauerhaft und zeigt sie beim Fortsetzen erneut an. Diese Erweiterung filtert diese Nachrichten, wie bei Antwort-Übersetzungen, aus jeder Modellanfrage heraus. Beim Fortsetzen wird früheres Denken ohne Übersetzungsnachricht nicht übersetzt.
 

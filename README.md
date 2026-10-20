@@ -2,7 +2,7 @@
 
 **English** | [한국어](docs/README.ko.md) | [日本語](docs/README.ja.md) | [简体中文](docs/README.zh-Hans.md) | [繁體中文](docs/README.zh-Hant.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [Deutsch](docs/README.de.md) | [Português](docs/README.pt.md)
 
-Version 0.1.0 — a language-neutral translation extension for OMP (the oh-my-pi coding agent).
+Version 0.1.6 — a language-neutral translation extension for OMP (the oh-my-pi coding agent).
 
 ## Overview
 
@@ -67,7 +67,7 @@ In the interactive TUI (main session only), a language picker appears once:
 
 - If you cancel, translation stays inactive and you are not asked again in this session. Run `/translate setup` later to choose a language.
 - Prompt translation stays off until you turn it on with `/translate request on`.
-- Answer translation stays off until you turn it on with `/translate answer on`.
+- Answer translation is off by default. Enable it with `/translate answer on`; a reasoning-extraction refusal also enables it temporarily for the session.
 - Non-interactive modes (`print`, `json`, `rpc`) and subagents never show dialogs. In `print`/`json` modes a one-line setup instruction is written to stderr. In `rpc` mode a notification is sent instead.
 
 ## Commands
@@ -130,6 +130,7 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 - Results are cached in memory (up to 500 entries). The cache key includes the model, target language, and text. Identical completed texts share one request; each occurrence still gets its own message.
 - Changing settings, switching or branching the session, or ending the session cancels pending work and drops results not yet posted. Already posted translations remain.
 - A failed translation shows a warning (`Thinking translation failed: …`) and posts nothing.
+- A provider `Refusal (reasoning_extraction)` pauses thinking translation for the rest of the session, cancels pending thinking work, and shows one warning. Final-answer translation is enabled as a session-only fallback, including the latest completed answer if the refusal arrives late. Saved settings are unchanged. `/translate status` shows the pause and fallback; `/translate answer off` disables the fallback. Switching, branching, or ending the session clears both overrides. Other translation errors do not trigger this behavior.
 - Each translation has a 20 s deadline.
 - The host persists each posted translation and displays it again on resume. This extension filters those messages from every model request, as it does for answer translations. Resuming does not translate earlier thinking that has no translation message.
 

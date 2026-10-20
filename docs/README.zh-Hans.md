@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | **简体中文** | [繁體中文](README.zh-Hant.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português](README.pt.md)
 
-版本 0.1.0 —— 一个与语言无关的 OMP（oh-my-pi 编码代理）翻译扩展。
+版本 0.1.6 —— 一个与语言无关的 OMP（oh-my-pi 编码代理）翻译扩展。
 
 ## 概述
 
@@ -125,6 +125,7 @@ omp plugin install omp-translate@omp-translate
 - 结果缓存在内存中（最多 500 条）。缓存键包含模型、目标语言和文本。相同的已完成文本共享同一个请求，但每次出现仍各自生成一条消息。
 - 更改设置、切换或分支会话、或结束会话，都会取消待处理的工作并丢弃尚未发布的结果。已发布的译文会保留。
 - 翻译失败时会显示警告（`Thinking translation failed: …`），且不会发布任何内容。
+- 遇到 `Refusal (reasoning_extraction)` 时，本会话后续的思考翻译会暂停，待处理的思考翻译会被取消，并只显示一次警告。扩展会临时启用最终回答翻译作为替代；若拒绝响应较晚到达，也会翻译最近已完成的回答。保存的设置不变。`/translate status` 显示当前状态，`/translate answer off` 可关闭替代翻译。切换、分支或结束会话会清除这两项临时状态。其他错误不会触发此行为。
 - 每次翻译的时限为 20 秒。
 - 宿主会持久化每条已发布的译文，并在恢复会话时再次显示。与回答译文一样，本扩展会从所有模型请求中过滤掉这些消息。恢复会话不会翻译没有译文消息的早先思考。
 

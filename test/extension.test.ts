@@ -1116,6 +1116,58 @@ async function readSettings(): Promise<TranslationSettings> {
 	return JSON.parse(await fs.readFile(settingsPath, "utf8")) as TranslationSettings;
 }
 
+describe("reasoning refusal fallback", () => {
+	for (const late of [false, true]) {
+		test(`stops thinking and translates the final answer when refusal arrives ${late ? "after" : "before"} agent_end`, async () => {
+			const { extension, session } = await thinkingSession();
+			const saved = await readSettings();
+			const replies = deferReplies(extension);
+			endMessage(extension, session, thoughts("Pending first.", "Refused second."));
+			session.fireTimersWithDelay(THINKING_DELAY_MS);
+			endMessage(extension, session, thoughts("Still queued."));
+			if (late) await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+			replies[1]!.reject(new Error("error Refusal (reasoning_extraction): blocked"));
+			await settle();
+			expect(extension.calls[0]!.signal?.aborted).toBe(true);
+			expect(session.activeTimers()).toBe(0);
+			expect(session.notifications.filter(n => n.type === "warning")).toHaveLength(1);
+			if (!late) await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+			expect(extension.calls.map(call => call.text)).toEqual(["Pending first.", "Refused second.", "Build passed."]);
+			replies[2]!.resolve("ビルドは成功しました。");
+			replies[0]!.reject(new Error("error Refusal (reasoning_extraction): blocked"));
+			await settle();
+			expect(extension.pi.sent).toEqual([answerPost("ビルドは成功しました。")]);
+			await completeThinking(extension, session, "New distinct thought.");
+			expect(extension.calls).toHaveLength(3);
+			expect(session.notifications.filter(n => n.type === "warning")).toHaveLength(1);
+			expect(await readSettings()).toEqual(saved);
+
+			await extension.pi.command().handler("answer off", session.ctx);
+			await extension.pi.emit("agent_end", agentEnd(finalAnswer("Next answer.")), session.ctx);
+			await completeThinking(extension, session, "Another thought.");
+			expect(extension.calls).toHaveLength(3);
+
+			await extension.pi.emit("session_switch", { type: "session_switch" }, session.ctx);
+			extension.respond = () => Promise.resolve("新しい考え。");
+			await completeThinking(extension, session, "New session thought.");
+			expect(extension.pi.sent.at(-1)).toEqual(thinkingPost("新しい考え。"));
+			await extension.pi.emit("agent_end", agentEnd(finalAnswer("Not enabled.")), session.ctx);
+			expect(extension.calls).toHaveLength(4);
+		});
+	}
+
+	test("ordinary errors do not pause thinking or enable answer translation", async () => {
+		const { extension, session } = await thinkingSession();
+		extension.respond = () => Promise.reject(new Error("rate limit"));
+		await completeThinking(extension, session, "First thought.");
+		extension.respond = () => Promise.resolve("次の考え。");
+		await completeThinking(extension, session, "Second thought.");
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		expect(extension.calls.map(call => call.text)).toEqual(["First thought.", "Second thought."]);
+		expect(extension.pi.sent).toEqual([thinkingPost("次の考え。")]);
+	});
+});
+
 describe("completed thinking translation", () => {
 	test("streaming updates never translate; one message_end translates the final text once after the start delay", async () => {
 		const { extension, session } = await thinkingSession();

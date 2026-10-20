@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | **Español** | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português](README.pt.md)
 
-Versión 0.1.0 — una extensión de traducción independiente del idioma para OMP (el agente de programación oh-my-pi).
+Versión 0.1.6 — una extensión de traducción independiente del idioma para OMP (el agente de programación oh-my-pi).
 
 ## Descripción general
 
@@ -125,6 +125,7 @@ Las etiquetas de idioma se guardan en forma canónica. Si edita el archivo a man
 - Los resultados se almacenan en caché en memoria (hasta 500 entradas). La clave de caché incluye el modelo, el idioma de destino y el texto. Los textos completados idénticos comparten una misma solicitud; cada aparición recibe igualmente su propio mensaje.
 - Cambiar la configuración, cambiar o ramificar la sesión, o finalizar la sesión cancela el trabajo pendiente y descarta los resultados aún no publicados. Las traducciones ya publicadas se conservan.
 - Una traducción fallida muestra una advertencia (`Thinking translation failed: …`) y no publica nada.
+- Un `Refusal (reasoning_extraction)` pausa la traducción del razonamiento durante el resto de la sesión, cancela el trabajo pendiente y muestra una sola advertencia. Se activa la traducción de respuestas finales como alternativa temporal, incluida la última respuesta completada si el rechazo llega tarde. No se modifica la configuración guardada. `/translate status` muestra el estado; `/translate answer off` desactiva la alternativa. Cambiar, ramificar o terminar la sesión elimina ambos ajustes temporales. Otros errores no activan este comportamiento.
 - Cada traducción tiene un plazo de 20 s.
 - El host conserva cada traducción publicada y la vuelve a mostrar al reanudar. Esta extensión filtra esos mensajes de cada solicitud al modelo, igual que con las traducciones de respuestas. Al reanudar no se traduce el razonamiento anterior que no tenga mensaje de traducción.
 

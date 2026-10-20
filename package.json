@@ -1,6 +1,6 @@
 {
   "name": "omp-translate",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Translate OMP thinking, final answers, and outgoing prompts using your configured models.",
   "type": "module",
   "keywords": [

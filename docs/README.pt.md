@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | **Português**
 
-Versão 0.1.0 — uma extensão de tradução independente de idioma para o OMP (o agente de programação oh-my-pi).
+Versão 0.1.6 — uma extensão de tradução independente de idioma para o OMP (o agente de programação oh-my-pi).
 
 ## Visão geral
 
@@ -125,6 +125,7 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 - Os resultados são armazenados em cache na memória (até 500 entradas). A chave do cache inclui o modelo, o idioma de destino e o texto. Textos concluídos idênticos compartilham uma única requisição; cada ocorrência ainda recebe sua própria mensagem.
 - Alterar as configurações, trocar ou ramificar a sessão, ou encerrar a sessão cancela o trabalho pendente e descarta os resultados ainda não publicados. As traduções já publicadas permanecem.
 - Uma tradução com falha mostra um aviso (`Thinking translation failed: …`) e não publica nada.
+- Um `Refusal (reasoning_extraction)` pausa a tradução do raciocínio pelo restante da sessão, cancela o trabalho pendente e mostra um único aviso. A tradução de respostas finais é ativada como alternativa temporária, incluindo a última resposta concluída se a recusa chegar tarde. As configurações salvas não mudam. `/translate status` mostra o estado; `/translate answer off` desativa a alternativa. Trocar, ramificar ou encerrar a sessão remove ambos os ajustes temporários. Outros erros não ativam esse comportamento.
 - Cada tradução tem um prazo de 20 s.
 - O host persiste cada tradução publicada e a exibe novamente ao retomar. Esta extensão filtra essas mensagens de toda requisição ao modelo, assim como faz com as traduções de respostas. Retomar não traduz o raciocínio anterior que não tenha mensagem de tradução.
 

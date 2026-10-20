@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | **繁體中文** | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português](README.pt.md)
 
-版本 0.1.0 — 適用於 OMP（oh-my-pi 程式設計代理）的語言中立翻譯擴充功能。
+版本 0.1.6 — 適用於 OMP（oh-my-pi 程式設計代理）的語言中立翻譯擴充功能。
 
 ## 概覽
 
@@ -125,6 +125,7 @@ omp plugin install omp-translate@omp-translate
 - 結果會快取在記憶體中（最多 500 筆）。快取鍵包含模型、目標語言與文字。相同的已完成文字會共用同一個請求，但每次出現仍各自產生一則訊息。
 - 變更設定、切換或分支工作階段，或結束工作階段，都會取消待處理的工作，並捨棄尚未發布的結果。已發布的譯文會保留。
 - 翻譯失敗時會顯示警告（`Thinking translation failed: …`），且不會發布任何內容。
+- 遇到 `Refusal (reasoning_extraction)` 時，本工作階段後續的思考翻譯會暫停，待處理的思考翻譯會被取消，並只顯示一次警告。擴充功能會暫時啟用最終回答翻譯作為替代；若拒絕回應較晚抵達，也會翻譯最近已完成的回答。儲存的設定不變。`/translate status` 顯示目前狀態，`/translate answer off` 可關閉替代翻譯。切換、分支或結束工作階段會清除這兩項暫時狀態。其他錯誤不會觸發此行為。
 - 每次翻譯的期限為 20 秒。
 - 主機會持久保存每則已發布的譯文，並在恢復工作階段時再次顯示。與回答譯文相同，本擴充功能會從所有模型請求中過濾掉這些訊息。恢復工作階段不會翻譯沒有譯文訊息的先前思考。
 

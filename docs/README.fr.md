@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Español](README.es.md) | **Français** | [Deutsch](README.de.md) | [Português](README.pt.md)
 
-Version 0.1.0 — une extension de traduction indépendante de la langue pour OMP (l'agent de programmation oh-my-pi).
+Version 0.1.6 — une extension de traduction indépendante de la langue pour OMP (l'agent de programmation oh-my-pi).
 
 ## Présentation
 
@@ -125,6 +125,7 @@ Les étiquettes de langue sont stockées sous forme canonique. Si vous modifiez 
 - Les résultats sont mis en cache en mémoire (jusqu'à 500 entrées). La clé de cache comprend le modèle, la langue cible et le texte. Les textes terminés identiques partagent une même requête ; chaque occurrence reçoit tout de même son propre message.
 - Modifier les paramètres, changer de session ou en créer une branche, ou terminer la session annule le travail en attente et abandonne les résultats pas encore publiés. Les traductions déjà publiées restent.
 - Une traduction échouée affiche un avertissement (`Thinking translation failed: …`) et ne publie rien.
+- Un `Refusal (reasoning_extraction)` suspend la traduction de la réflexion pour le reste de la session, annule le travail en attente et affiche un seul avertissement. La traduction des réponses finales est activée temporairement, y compris pour la dernière réponse terminée si le refus arrive tard. Les paramètres enregistrés restent inchangés. `/translate status` indique cet état ; `/translate answer off` désactive ce repli. Changer de session, créer une branche ou terminer la session réinitialise ces deux ajustements. Les autres erreurs ne déclenchent pas ce comportement.
 - Chaque traduction dispose d'un délai de 20 s.
 - L'hôte persiste chaque traduction publiée et l'affiche de nouveau à la reprise. Cette extension filtre ces messages de chaque requête au modèle, comme pour les traductions des réponses. La reprise ne traduit pas la réflexion antérieure qui n'a pas de message de traduction.
 
