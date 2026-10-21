@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { Api, AssistantMessage, Context, Model, StopReason, completeSimple } from "@oh-my-pi/pi-ai";
 import type { AgentEndEvent } from "@oh-my-pi/pi-coding-agent";
 import {
+	allowedScripts,
 	buildRequestPrompt,
 	finalAnswerText,
+	foreignLetterCount,
 	createModelCaller,
+	LANGUAGE_RETRY_HINT,
 	MarkerMismatchError,
 	type ModelCall,
 	protectCode,
@@ -13,7 +16,7 @@ import {
 	ThinkingTranslator,
 	type ThinkingViewState,
 	type TimerHost,
-	translateAnswer,
+	translateRetrying,
 	translateText,
 } from "../src/translation.ts";
 
@@ -336,7 +339,56 @@ describe("translateText", () => {
 	});
 });
 
-describe("translateAnswer", () => {
+describe("allowedScripts", () => {
+	test("always allows Latin and common/inherited scripts", () => {
+		const en = allowedScripts("en");
+		expect(en).toContain("Latn");
+		expect(en).not.toContain("Hang");
+	});
+
+	test("adds companion scripts for the target language", () => {
+		for (const [tag, scripts] of [
+			["ko", ["Hang", "Hani"]],
+			["ja", ["Hira", "Kana", "Hani"]],
+			["zh-Hant", ["Hani", "Bopo"]],
+			["ru", ["Cyrl"]],
+		] as const) {
+			expect(allowedScripts(tag)).toEqual(expect.arrayContaining([...scripts]));
+		}
+	});
+
+	test("returns undefined for an unknown tag", () => {
+		expect(allowedScripts("xx")).toBeUndefined();
+	});
+});
+
+describe("foreignLetterCount", () => {
+	test("counts Hangul letters in an English target", () => {
+		expect(foreignLetterCount("perf(test): 통합 테스트 실행시간 단축 — run it", "en")).toBe(11);
+	});
+
+	test("returns 0 for English-only text in English", () => {
+		expect(foreignLetterCount("perf(test): shorten integration test runtime", "en")).toBe(0);
+	});
+
+	test("ignores ASCII identifiers and markers in Korean", () => {
+		expect(foreignLetterCount("`npmTest` 실행 @@OMPT_Q7_0@@ 완료", "ko")).toBe(0);
+	});
+
+	test("counts Japanese kana in Korean", () => {
+		expect(foreignLetterCount("テストを実行します", "ko")).toBeGreaterThan(0);
+	});
+
+	test("allows Hanja inside Korean", () => {
+		expect(foreignLetterCount("漢字 테스트", "ko")).toBe(0);
+	});
+
+	test("returns 0 for an unknown tag", () => {
+		expect(foreignLetterCount("통합 テスト тест", "xx")).toBe(0);
+	});
+});
+
+describe("translateRetrying", () => {
 	const systemPrompt = buildRequestPrompt("ko");
 	const source = "Run `npm test` and `ls` now.";
 	const valid = (text: string) => text.replace("Run ", "실행: ");
@@ -357,7 +409,7 @@ describe("translateAnswer", () => {
 
 	test("restores code after a first-attempt success with one provider call", async () => {
 		const { calls, caller } = scripted(call => valid(call.text));
-		expect(await translateAnswer(caller, systemPrompt, source)).toBe(expected);
+		expect(await translateRetrying(caller, systemPrompt, source, "ko")).toBe(expected);
 		expect(calls).toHaveLength(1);
 	});
 
@@ -373,7 +425,7 @@ describe("translateAnswer", () => {
 				call => corrupt(valid(call.text)),
 				call => valid(call.text),
 			);
-			expect(await translateAnswer(caller, systemPrompt, source)).toBe(expected);
+			expect(await translateRetrying(caller, systemPrompt, source, "ko")).toBe(expected);
 			expect(calls).toHaveLength(2);
 			expect(calls[1]?.text).not.toBe(calls[0]?.text);
 			expect(calls.map(call => call.systemPrompt)).toEqual([systemPrompt, systemPrompt]);
@@ -385,19 +437,19 @@ describe("translateAnswer", () => {
 			() => "실행하세요.",
 			() => "실행하세요.",
 		);
-		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow(MarkerMismatchError);
+		await expect(translateRetrying(caller, systemPrompt, source, "ko")).rejects.toThrow(MarkerMismatchError);
 		expect(calls).toHaveLength(2);
 	});
 
 	test("does not retry a provider error", async () => {
 		const { calls, caller } = scripted(() => Promise.reject(new Error("quota exceeded")));
-		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow("quota exceeded");
+		await expect(translateRetrying(caller, systemPrompt, source, "ko")).rejects.toThrow("quota exceeded");
 		expect(calls).toHaveLength(1);
 	});
 
 	test("does not retry empty output", async () => {
 		const { calls, caller } = scripted(() => "  \n ");
-		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow("empty translation");
+		await expect(translateRetrying(caller, systemPrompt, source, "ko")).rejects.toThrow("empty translation");
 		expect(calls).toHaveLength(1);
 	});
 
@@ -406,7 +458,7 @@ describe("translateAnswer", () => {
 			() => "실행하세요.",
 			() => Promise.reject(new Error("rate limited")),
 		);
-		await expect(translateAnswer(caller, systemPrompt, source)).rejects.toThrow("rate limited");
+		await expect(translateRetrying(caller, systemPrompt, source, "ko")).rejects.toThrow("rate limited");
 		expect(calls).toHaveLength(2);
 	});
 
@@ -414,7 +466,7 @@ describe("translateAnswer", () => {
 		const controller = new AbortController();
 		controller.abort(new Error("cancelled"));
 		const { calls, caller } = scripted(call => valid(call.text));
-		await expect(translateAnswer(caller, systemPrompt, source, controller.signal)).rejects.toThrow("cancelled");
+		await expect(translateRetrying(caller, systemPrompt, source, "ko", controller.signal)).rejects.toThrow("cancelled");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -427,7 +479,7 @@ describe("translateAnswer", () => {
 			},
 			call => valid(call.text),
 		);
-		await expect(translateAnswer(caller, systemPrompt, source, controller.signal)).rejects.toThrow();
+		await expect(translateRetrying(caller, systemPrompt, source, "ko", controller.signal)).rejects.toThrow();
 		expect(calls).toHaveLength(1);
 	});
 
@@ -441,7 +493,7 @@ describe("translateAnswer", () => {
 				return new Promise<string>(() => {});
 			},
 		);
-		const translation = translateAnswer(caller, systemPrompt, source, controller.signal);
+		const translation = translateRetrying(caller, systemPrompt, source, "ko", controller.signal);
 		await pending.promise;
 		controller.abort(new Error("cancelled"));
 		await expect(translation).rejects.toThrow("cancelled");
@@ -466,7 +518,7 @@ describe("translateAnswer", () => {
 					return new Promise<string>(() => {});
 				},
 			);
-			const translation = translateAnswer(caller, systemPrompt, source);
+			const translation = translateRetrying(caller, systemPrompt, source, "ko");
 			await pending.promise;
 			deadlines[0]?.abort(new Error("deadline"));
 			await expect(translation).rejects.toThrow("deadline");
@@ -475,6 +527,73 @@ describe("translateAnswer", () => {
 		} finally {
 			AbortSignal.timeout = original;
 		}
+	});
+
+	describe("language retry", () => {
+		const enPrompt = buildRequestPrompt("en");
+		const commit = "Commit: shorten integration tests";
+
+		test("retries a wrong-script response with the hint and returns the cleaner result", async () => {
+			const { calls, caller } = scripted(
+				() => "Commit: 통합 테스트 단축",
+				() => commit,
+			);
+			expect(await translateRetrying(caller, enPrompt, "커밋", "en")).toBe(commit);
+			expect(calls).toHaveLength(2);
+			expect(calls[0]?.systemPrompt).toBe(enPrompt);
+			expect(calls[1]?.systemPrompt).toBe(`${enPrompt}\n${LANGUAGE_RETRY_HINT}`);
+		});
+
+		test("keeps the first result when the retry has more foreign letters", async () => {
+			const { calls, caller } = scripted(
+				() => "Commit: 통합",
+				() => "perf(test): 통합 테스트 실행시간 단축 — run it",
+			);
+			expect(await translateRetrying(caller, enPrompt, "커밋", "en")).toBe("Commit: 통합");
+			expect(calls).toHaveLength(2);
+		});
+
+		test("keeps the first result when the retry fails", async () => {
+			const { calls, caller } = scripted(
+				() => "Commit: 통합",
+				() => Promise.reject(new Error("rate limited")),
+			);
+			expect(await translateRetrying(caller, enPrompt, "커밋", "en")).toBe("Commit: 통합");
+			expect(calls).toHaveLength(2);
+		});
+
+		test("rejects with the abort reason when aborted during the retry", async () => {
+			const controller = new AbortController();
+			const pending = Promise.withResolvers<void>();
+			const { calls, caller } = scripted(
+				() => "Commit: 통합",
+				() => {
+					pending.resolve();
+					return new Promise<string>(() => {});
+				},
+			);
+			const translation = translateRetrying(caller, enPrompt, "커밋", "en", controller.signal);
+			await pending.promise;
+			controller.abort(new Error("cancelled"));
+			await expect(translation).rejects.toThrow("cancelled");
+			expect(calls).toHaveLength(2);
+		});
+
+		test("makes one call when the first result is clean", async () => {
+			const { calls, caller } = scripted(() => commit);
+			expect(await translateRetrying(caller, enPrompt, "커밋", "en")).toBe(commit);
+			expect(calls).toHaveLength(1);
+		});
+
+		test("does not language-retry after a marker-mismatch retry", async () => {
+			const { calls, caller } = scripted(
+				() => "Run it.",
+				call => call.text.replace("Run ", "실행 "),
+			);
+			expect(await translateRetrying(caller, enPrompt, source, "en")).toBe("실행 `npm test` and `ls` now.");
+			expect(calls).toHaveLength(2);
+			expect(calls.map(call => call.systemPrompt)).toEqual([enPrompt, enPrompt]);
+		});
 	});
 });
 

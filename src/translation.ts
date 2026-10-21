@@ -25,6 +25,47 @@ export function describeLanguage(tag: string): string {
 	return tag;
 }
 
+const SCRIPT_GROUPS: Readonly<Record<string, readonly string[]>> = {
+	Kore: ["Hang", "Hani"],
+	Jpan: ["Hira", "Kana", "Hani"],
+	Hans: ["Hani", "Bopo"],
+	Hant: ["Hani", "Bopo"],
+};
+
+/** Unicode scripts accepted in output for targetLanguage (Latn/Zyyy/Zinh always); undefined when the script is unknown. */
+export function allowedScripts(targetLanguage: string): readonly string[] | undefined {
+	let script: string | undefined;
+	try {
+		script = new Intl.Locale(targetLanguage).maximize().script;
+	} catch {
+		return undefined;
+	}
+	if (!script) return undefined;
+	const extra = SCRIPT_GROUPS[script] ?? [script];
+	try {
+		for (const s of extra) new RegExp(`\\p{Script=${s}}`, "u");
+	} catch {
+		return undefined;
+	}
+	return [...new Set(["Latn", "Zyyy", "Zinh", ...extra])];
+}
+
+const foreignLetterPatterns = new Map<string, RegExp | undefined>();
+
+/** Count of letters whose script is not allowed for targetLanguage; 0 when unchecked. */
+export function foreignLetterCount(text: string, targetLanguage: string): number {
+	let pattern = foreignLetterPatterns.get(targetLanguage);
+	if (!foreignLetterPatterns.has(targetLanguage)) {
+		const allowed = allowedScripts(targetLanguage);
+		pattern = allowed && new RegExp(`(?!${allowed.map(s => `\\p{Script=${s}}`).join("|")})\\p{L}`, "gu");
+		foreignLetterPatterns.set(targetLanguage, pattern);
+	}
+	return pattern ? (text.match(pattern)?.length ?? 0) : 0;
+}
+
+export const LANGUAGE_RETRY_HINT =
+	"The previous attempt left parts of the source untranslated. Translate every sentence into the target language, including quoted text, titles, and commit messages; keep only code placeholders, identifiers, paths, URLs, and commands verbatim.";
+
 /*
  * Protected code is replaced by markers of the form `@@OMPT_<nonce>_<index>@@`:
  * plain ASCII the model has no reason to translate or reformat. `<nonce>` is
@@ -273,23 +314,35 @@ export async function translateText(
 	return protectedText.restore(translated);
 }
 
-/** translateText under one shared deadline; retries once, only on MarkerMismatchError. */
-export async function translateAnswer(
+/** translateText under one shared deadline, at most two attempts: on MarkerMismatchError with the same prompt; on foreign-script output with LANGUAGE_RETRY_HINT, keeping the result with fewer foreign letters. */
+export async function translateRetrying(
 	caller: ModelCaller,
 	systemPrompt: string,
 	source: string,
+	targetLanguage: string,
 	signal?: AbortSignal,
-	timeoutMs: number = ANSWER_TRANSLATION_TIMEOUT_MS,
+	timeoutMs: number = TRANSLATION_TIMEOUT_MS,
 ): Promise<string> {
 	const sharedSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
 	sharedSignal.throwIfAborted();
+	let first: string;
 	try {
-		return await translateText(caller, systemPrompt, source, sharedSignal, timeoutMs);
+		first = await translateText(caller, systemPrompt, source, sharedSignal, timeoutMs);
 	} catch (error) {
 		if (!(error instanceof MarkerMismatchError)) throw error;
+		sharedSignal.throwIfAborted();
+		return translateText(caller, systemPrompt, source, sharedSignal, timeoutMs);
 	}
-	sharedSignal.throwIfAborted();
-	return translateText(caller, systemPrompt, source, sharedSignal, timeoutMs);
+	const firstForeign = foreignLetterCount(first, targetLanguage);
+	if (firstForeign === 0) return first;
+	try {
+		sharedSignal.throwIfAborted();
+		const second = await translateText(caller, `${systemPrompt}\n${LANGUAGE_RETRY_HINT}`, source, sharedSignal, timeoutMs);
+		return foreignLetterCount(second, targetLanguage) < firstForeign ? second : first;
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		return first;
+	}
 }
 
 export type ThinkingViewState =

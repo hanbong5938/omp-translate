@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Español](README.es.md) | [Français](README.fr.md) | **Deutsch** | [Português](README.pt.md)
 
-Version 0.1.6 — eine sprachneutrale Übersetzungserweiterung für OMP (den Coding-Agenten oh-my-pi).
+Version 0.1.7 — eine sprachneutrale Übersetzungserweiterung für OMP (den Coding-Agenten oh-my-pi).
 
 ## Überblick
 
@@ -126,14 +126,14 @@ Sprach-Tags werden in kanonischer Form gespeichert. Wenn Sie die Datei von Hand 
 - Das Ändern von Einstellungen, das Wechseln oder Verzweigen der Sitzung oder das Beenden der Sitzung bricht ausstehende Arbeit ab und verwirft noch nicht veröffentlichte Ergebnisse. Bereits veröffentlichte Übersetzungen bleiben erhalten.
 - Eine fehlgeschlagene Übersetzung zeigt eine Warnung (`Thinking translation failed: …`) und veröffentlicht nichts.
 - Bei `Refusal (reasoning_extraction)` wird die Denkübersetzung für den Rest der Sitzung pausiert, ausstehende Arbeit abgebrochen und einmal gewarnt. Stattdessen werden finale Antworten übersetzt, bei später Ablehnung auch die letzte abgeschlossene Antwort. Gespeicherte Einstellungen bleiben unverändert. `/translate status` zeigt den Zustand; `/translate answer off` deaktiviert diesen Ersatz. Sitzungswechsel, Verzweigen oder Beenden setzt die temporären Änderungen zurück. Andere Fehler lösen dies nicht aus.
-- Jede Übersetzung hat eine Frist von 20 s.
+- Jede Übersetzung hat eine Frist von 20 s, die sie mit ihrer Wiederholung teilt (siehe Wiederholungen).
 - Der Host speichert jede veröffentlichte Übersetzung dauerhaft und zeigt sie beim Fortsetzen erneut an. Diese Erweiterung filtert diese Nachrichten, wie bei Antwort-Übersetzungen, aus jeder Modellanfrage heraus. Beim Fortsetzen wird früheres Denken ohne Übersetzungsnachricht nicht übersetzt.
 
 ### Antwort-Übersetzung
 
 - Übersetzt werden nur abgeschlossene finale Antworten des Hauptagenten in der TUI. Subagenten, nicht interaktive Modi, Fortsetzungen/Wiederholungen und Turns mit Tool-Aufrufen werden nicht übersetzt.
 - Die Übersetzung läuft im Hintergrund mit einer Frist von 60 s und startet keinen neuen Agenten-Turn. Ist der Agent bei Fertigstellung beschäftigt, wird sie zurückgehalten und am Ende des nächsten Laufs des Hauptagenten angezeigt.
-- Verliert, dupliziert oder beschädigt das Modell einen Code-Platzhalter, wird die Antwort innerhalb derselben 60-s-Frist einmal erneut aus dem Originaltext übersetzt. Scheitert auch dieser Versuch, wird eine Warnung angezeigt und keine Übersetzung veröffentlicht.
+- Die 60-s-Frist wird mit einer Wiederholung geteilt (siehe Wiederholungen). Scheitert auch dieser Versuch, wird eine Warnung angezeigt und keine Übersetzung veröffentlicht.
 - Ausstehende oder zurückgehaltene Übersetzungen werden beim Wechseln oder Verzweigen der Sitzung und beim Herunterfahren verworfen. Ein mit dem Original identisches Ergebnis (bereits in der Zielsprache) wird nicht angezeigt.
 - Die Originalantwort bleibt im Transkript, in der Sitzungsdatei und in künftigen LLM-Anfragen unverändert. Die Übersetzung ist eine separate benutzerdefinierte Nachricht (`display: true`, `customType: "omp-translate"`), die der Host in der Sitzung speichert und beim Fortsetzen erneut anzeigt.
 - Das Plugin entfernt diese Nachrichten immer aus dem an den Provider gesendeten Kontext, auch wenn `answer` deaktiviert ist. Das funktioniert nur, wenn das Plugin geladen ist: Deaktivieren Sie es nicht, wenn Sie Sitzungen mit übersetzten Antworten fortsetzen, sonst sendet der Host diese Nachrichten an das Modell.
@@ -150,9 +150,16 @@ Sprach-Tags werden in kanonischer Form gespeichert. Wenn Sie die Datei von Hand 
 ### Erhaltung von Code
 
 - Umzäunte Codeblöcke und Inline-Code-Abschnitte werden vor der Übersetzung durch Platzhalter ersetzt und danach Byte für Byte wiederhergestellt.
-- Lässt das Modell einen Platzhalter weg oder dupliziert ihn, wird die Übersetzung verworfen. Bei Prompts wird der Originaltext gesendet. Beim Denkprozess wird ein Fehler angezeigt.
+- Lässt das Modell einen Platzhalter weg oder dupliziert ihn, wird die Übersetzung verworfen und einmal wiederholt (siehe Wiederholungen). Wird auch die Wiederholung verworfen: Bei Prompts wird der Originaltext gesendet; beim Denkprozess wird ein Fehler angezeigt; bei Antworten wird eine Warnung angezeigt und keine Übersetzung veröffentlicht.
 - Andere Bezeichner und Pfade werden nur durch Anweisungen an das Modell geschützt. Perfekte Erhaltung und semantische Gleichwertigkeit sind nicht garantiert.
 - Der Quelltext wird in eine Rahmung eingebettet, die dem Modell mitteilt, ihn als zu übersetzenden Text zu behandeln. Diese Rahmung ist eine Anleitung, keine Sicherheitsgrenze.
+
+### Wiederholungen
+
+- Jede Übersetzung (Denkprozess, Antwort, Prompt) wird höchstens zweimal innerhalb einer gemeinsamen Frist versucht (20 s; 60 s für Antworten). Eine Wiederholung sendet erneut den Originaltext.
+- Wiederholt wird, wenn ein Code-Platzhalter fehlt oder dupliziert ist oder wenn die Ausgabe Buchstaben aus einer Schrift enthält, die nicht zur Zielsprache gehört. Lateinische Buchstaben werden immer akzeptiert (Bezeichner, Pfade, englische Begriffe); Han-Zeichen werden für koreanische, japanische und chinesische Zielsprachen akzeptiert, Kana für Japanisch, Bopomofo für Chinesisch. Beispiel: Eine englische Übersetzung, die noch eine koreanische Commit-Nachricht enthält, wird wiederholt.
+- Die Sprach-Wiederholung fügt eine Anweisung hinzu, auch zitierten Text, Titel und Commit-Nachrichten zu übersetzen. Von beiden Ergebnissen wird dasjenige mit weniger Buchstaben aus fremden Schriften angezeigt; schlägt die Wiederholung fehl oder überschreitet sie die Frist, wird das erste Ergebnis verwendet.
+- Die Prüfung basiert ausschließlich auf der Schrift. Eine Ausgabe in der falschen Sprache, aber derselben Schrift (Spanisch statt Englisch oder unübersetztes Englisch bei Zielsprache Koreanisch), wird nicht erkannt. Sprachen, deren Schrift sich nicht aus dem Tag bestimmen lässt, werden nicht geprüft.
 
 ## Datenschutz & Kosten
 

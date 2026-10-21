@@ -13,6 +13,7 @@ import {
 } from "./settings.ts";
 import type { ModelCaller, ThinkingRequest, ThinkingViewState, TimerHost } from "./translation.ts";
 import {
+	ANSWER_TRANSLATION_TIMEOUT_MS,
 	buildAnswerPrompt,
 	buildRequestPrompt,
 	buildThinkingPrompt,
@@ -21,8 +22,7 @@ import {
 	finalAnswerText,
 	shouldTranslateInput,
 	ThinkingTranslator,
-	translateAnswer,
-	translateText,
+	translateRetrying,
 } from "./translation.ts";
 
 export interface TranslateExtensionDeps {
@@ -261,7 +261,7 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 				modelKey: `${model.provider}/${model.id}`,
 				targetLanguage,
 				text,
-				run: signal => translateText(createCaller(model, ctx), systemPrompt, text, signal),
+				run: signal => translateRetrying(createCaller(model, ctx), systemPrompt, text, targetLanguage, signal),
 			};
 		}
 
@@ -535,10 +535,11 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			const controller = new AbortController();
 			inputControllers.add(controller);
 			try {
-				const text = await translateText(
+				const text = await translateRetrying(
 					createCaller(model, ctx),
 					buildRequestPrompt(settings.requestLanguage),
 					event.text,
+					settings.requestLanguage,
 					controller.signal,
 				);
 				if (isStale() || controller.signal.aborted) return discardStaleInput();
@@ -583,7 +584,14 @@ export function createTranslateExtension(deps: TranslateExtensionDeps = {}): (pi
 			const controller = new AbortController();
 			answerControllers.add(controller);
 			const isStale = (): boolean => epoch !== sessionEpoch || controller.signal.aborted;
-			translateAnswer(createCaller(model, ctx), buildAnswerPrompt(targetLanguage), text, controller.signal)
+			translateRetrying(
+				createCaller(model, ctx),
+				buildAnswerPrompt(targetLanguage),
+				text,
+				targetLanguage,
+				controller.signal,
+				ANSWER_TRANSLATION_TIMEOUT_MS,
+			)
 				.then(translated => {
 					if (isStale() || (!store.settings?.answer && !answerFallback) || translated.trim() === text) return;
 					if (ctx.isIdle()) postAnswer(translated, targetLanguage);

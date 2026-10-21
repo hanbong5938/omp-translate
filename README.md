@@ -2,7 +2,7 @@
 
 **English** | [한국어](docs/README.ko.md) | [日本語](docs/README.ja.md) | [简体中文](docs/README.zh-Hans.md) | [繁體中文](docs/README.zh-Hant.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [Deutsch](docs/README.de.md) | [Português](docs/README.pt.md)
 
-Version 0.1.6 — a language-neutral translation extension for OMP (the oh-my-pi coding agent).
+Version 0.1.7 — a language-neutral translation extension for OMP (the oh-my-pi coding agent).
 
 ## Overview
 
@@ -131,13 +131,13 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 - Changing settings, switching or branching the session, or ending the session cancels pending work and drops results not yet posted. Already posted translations remain.
 - A failed translation shows a warning (`Thinking translation failed: …`) and posts nothing.
 - A provider `Refusal (reasoning_extraction)` pauses thinking translation for the rest of the session, cancels pending thinking work, and shows one warning. Final-answer translation is enabled as a session-only fallback, including the latest completed answer if the refusal arrives late. Saved settings are unchanged. `/translate status` shows the pause and fallback; `/translate answer off` disables the fallback. Switching, branching, or ending the session clears both overrides. Other translation errors do not trigger this behavior.
-- Each translation has a 20 s deadline.
+- Each translation has a 20 s deadline, shared with its retry (see Retries).
 - The host persists each posted translation and displays it again on resume. This extension filters those messages from every model request, as it does for answer translations. Resuming does not translate earlier thinking that has no translation message.
 
 ### Answer translation
 
 - Only the last assistant message of a completed main-agent TUI run is translated. Continuations, tool-call turns, failed or aborted answers, empty answers, subagents, and non-interactive modes are skipped.
-- Translation uses `targetLanguage` and the thinking translation model, with a 60 s deadline. It runs in the background without starting another agent turn. If the model drops, duplicates, or garbles a code placeholder, the answer is translated once more from the original text within the same 60 s deadline.
+- Translation uses `targetLanguage` and the thinking translation model, with a 60 s deadline. It runs in the background without starting another agent turn. The 60 s deadline is shared with a retry (see Retries).
 - If a new run is active when translation finishes, the result waits for the next idle main-agent end. Switching, branching, or shutting down the session discards pending and held results.
 - Turning answer translation off drops still-pending results; already-held results can still appear at the next idle end. Existing displayed translations remain. An unchanged translation is not displayed; failures produce a warning without changing the original.
 - The host persists each translation as a separate display-only custom message and displays it again on resume. This extension filters those messages from every model request, including when answer translation is off. **Keep the extension loaded when resuming translated sessions**: without its context filter, the host can include custom messages in model requests.
@@ -153,9 +153,16 @@ Each settings change re-reads the file under an OS file lock and overwrites only
 ### Code preservation
 
 - Fenced code blocks and inline code spans are replaced with placeholders before translation and restored byte-for-byte afterwards.
-- If the model drops or duplicates a placeholder, the translation is rejected. For prompts, the original text is sent. For thinking, a failure is shown. For answers, translation is retried once; if the retry is also rejected, a warning is shown and no translation is posted.
+- If the model drops or duplicates a placeholder, the translation is rejected and retried once (see Retries). If the retry is also rejected: for prompts, the original text is sent; for thinking, a failure is shown; for answers, a warning is shown and no translation is posted.
 - Other identifiers and paths are protected only by instructions to the model. Perfect preservation and semantic equivalence are not guaranteed.
 - The source text is wrapped in framing that tells the model to treat it as text to translate. This framing is guidance, not a security boundary.
+
+### Retries
+
+- Every translation (thinking, answer, prompt) is attempted at most twice under one shared deadline (20 s; 60 s for answers). A retry re-sends the original text.
+- A retry happens when a code placeholder is missing or duplicated, or when the output contains letters from a script that does not belong to the target language. Latin letters are always accepted (identifiers, paths, English terms); Han characters are accepted for Korean, Japanese, and Chinese targets, kana for Japanese, Bopomofo for Chinese. Example: an English translation that still contains a Korean commit message is retried.
+- The language retry adds an instruction to translate quoted text, titles, and commit messages too. Of the two results, the one with fewer foreign-script letters is shown; if the retry fails or times out, the first result is used.
+- The check is script-based only. Output in the wrong language but the same script (Spanish instead of English, or untranslated English when the target is Korean) is not detected. Languages whose script cannot be determined from the tag are not checked.
 
 ## Privacy & cost
 

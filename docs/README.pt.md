@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | **Português**
 
-Versão 0.1.6 — uma extensão de tradução independente de idioma para o OMP (o agente de programação oh-my-pi).
+Versão 0.1.7 — uma extensão de tradução independente de idioma para o OMP (o agente de programação oh-my-pi).
 
 ## Visão geral
 
@@ -126,14 +126,14 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 - Alterar as configurações, trocar ou ramificar a sessão, ou encerrar a sessão cancela o trabalho pendente e descarta os resultados ainda não publicados. As traduções já publicadas permanecem.
 - Uma tradução com falha mostra um aviso (`Thinking translation failed: …`) e não publica nada.
 - Um `Refusal (reasoning_extraction)` pausa a tradução do raciocínio pelo restante da sessão, cancela o trabalho pendente e mostra um único aviso. A tradução de respostas finais é ativada como alternativa temporária, incluindo a última resposta concluída se a recusa chegar tarde. As configurações salvas não mudam. `/translate status` mostra o estado; `/translate answer off` desativa a alternativa. Trocar, ramificar ou encerrar a sessão remove ambos os ajustes temporários. Outros erros não ativam esse comportamento.
-- Cada tradução tem um prazo de 20 s.
+- Cada tradução tem um prazo de 20 s, compartilhado com sua nova tentativa (veja Novas tentativas).
 - O host persiste cada tradução publicada e a exibe novamente ao retomar. Esta extensão filtra essas mensagens de toda requisição ao modelo, assim como faz com as traduções de respostas. Retomar não traduz o raciocínio anterior que não tenha mensagem de tradução.
 
 ### Tradução de respostas
 
 - Apenas respostas finais concluídas do agente principal na TUI são traduzidas. Subagentes, modos não interativos, continuações/novas tentativas e turnos com chamadas de ferramentas não são traduzidos.
 - A tradução é executada em segundo plano com prazo de 60 s e não inicia um novo turno do agente. Se terminar enquanto o agente estiver ocupado, ela é retida e exibida ao final da próxima execução do agente principal.
-- Se o modelo omitir, duplicar ou corromper um marcador de código, a resposta é traduzida novamente uma vez a partir do texto original, dentro do mesmo prazo de 60 s. Se essa tentativa também falhar, um aviso é exibido e nenhuma tradução é publicada.
+- O prazo de 60 s é compartilhado com uma nova tentativa (veja Novas tentativas). Se essa tentativa também falhar, um aviso é exibido e nenhuma tradução é publicada.
 - Traduções pendentes ou retidas são descartadas ao trocar ou ramificar a sessão, ou no encerramento. Um resultado idêntico ao original (já no idioma de destino) não é exibido.
 - A resposta original permanece intacta na transcrição, no arquivo de sessão e nas futuras requisições ao LLM. A tradução é uma mensagem personalizada separada (`display: true`, `customType: "omp-translate"`) que o host salva na sessão e exibe novamente ao retomá-la.
 - O plugin sempre remove essas mensagens do contexto enviado ao provedor, mesmo com `answer` desativado. Essa exclusão só funciona com o plugin carregado: não o desative ao retomar sessões com respostas traduzidas, ou o host enviará essas mensagens ao modelo.
@@ -150,9 +150,16 @@ As tags de idioma são armazenadas na forma canônica. Se você editar o arquivo
 ### Preservação de código
 
 - Blocos de código delimitados e trechos de código inline são substituídos por marcadores antes da tradução e restaurados byte a byte depois.
-- Se o modelo omitir ou duplicar um marcador, a tradução é rejeitada. Para prompts, o texto original é enviado. Para o raciocínio, uma falha é exibida.
+- Se o modelo omitir ou duplicar um marcador, a tradução é rejeitada e tentada novamente uma vez (veja Novas tentativas). Se a nova tentativa também for rejeitada: para prompts, o texto original é enviado; para o raciocínio, uma falha é exibida; para respostas, um aviso é exibido e nenhuma tradução é publicada.
 - Outros identificadores e caminhos são protegidos apenas por instruções ao modelo. A preservação perfeita e a equivalência semântica não são garantidas.
 - O texto de origem é envolvido por um enquadramento que instrui o modelo a tratá-lo como texto a ser traduzido. Esse enquadramento é uma orientação, não uma barreira de segurança.
+
+### Novas tentativas
+
+- Cada tradução (raciocínio, resposta, prompt) é tentada no máximo duas vezes dentro de um único prazo compartilhado (20 s; 60 s para respostas). Uma nova tentativa reenvia o texto original.
+- Uma nova tentativa ocorre quando um marcador de código está ausente ou duplicado, ou quando a saída contém letras de uma escrita que não pertence ao idioma de destino. Letras latinas são sempre aceitas (identificadores, caminhos, termos em inglês); caracteres Han são aceitos para destinos em coreano, japonês e chinês, kana para japonês e bopomofo para chinês. Exemplo: uma tradução para o inglês que ainda contém uma mensagem de commit em coreano é tentada novamente.
+- A nova tentativa por idioma adiciona uma instrução para traduzir também texto entre aspas, títulos e mensagens de commit. Dos dois resultados, é exibido o que tiver menos letras de escrita estrangeira; se a nova tentativa falhar ou esgotar o prazo, o primeiro resultado é usado.
+- A verificação se baseia apenas na escrita. Uma saída no idioma errado, mas com a mesma escrita (espanhol em vez de inglês, ou inglês não traduzido quando o destino é coreano), não é detectada. Idiomas cuja escrita não pode ser determinada a partir da tag não são verificados.
 
 ## Privacidade e custo
 

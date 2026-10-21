@@ -2,7 +2,7 @@
 
 [English](../README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md) | [Español](README.es.md) | **Français** | [Deutsch](README.de.md) | [Português](README.pt.md)
 
-Version 0.1.6 — une extension de traduction indépendante de la langue pour OMP (l'agent de programmation oh-my-pi).
+Version 0.1.7 — une extension de traduction indépendante de la langue pour OMP (l'agent de programmation oh-my-pi).
 
 ## Présentation
 
@@ -126,14 +126,14 @@ Les étiquettes de langue sont stockées sous forme canonique. Si vous modifiez 
 - Modifier les paramètres, changer de session ou en créer une branche, ou terminer la session annule le travail en attente et abandonne les résultats pas encore publiés. Les traductions déjà publiées restent.
 - Une traduction échouée affiche un avertissement (`Thinking translation failed: …`) et ne publie rien.
 - Un `Refusal (reasoning_extraction)` suspend la traduction de la réflexion pour le reste de la session, annule le travail en attente et affiche un seul avertissement. La traduction des réponses finales est activée temporairement, y compris pour la dernière réponse terminée si le refus arrive tard. Les paramètres enregistrés restent inchangés. `/translate status` indique cet état ; `/translate answer off` désactive ce repli. Changer de session, créer une branche ou terminer la session réinitialise ces deux ajustements. Les autres erreurs ne déclenchent pas ce comportement.
-- Chaque traduction dispose d'un délai de 20 s.
+- Chaque traduction dispose d'un délai de 20 s, partagé avec sa nouvelle tentative (voir Nouvelles tentatives).
 - L'hôte persiste chaque traduction publiée et l'affiche de nouveau à la reprise. Cette extension filtre ces messages de chaque requête au modèle, comme pour les traductions des réponses. La reprise ne traduit pas la réflexion antérieure qui n'a pas de message de traduction.
 
 ### Traduction des réponses
 
 - Seules les réponses finales terminées de l'agent principal dans la TUI sont traduites. Les sous-agents, les modes non interactifs, les continuations/nouvelles tentatives et les tours avec appels d'outils ne le sont pas.
 - La traduction s'exécute en arrière-plan avec un délai de 60 s et ne démarre aucun nouveau tour de l'agent. Si elle se termine pendant que l'agent est occupé, elle est mise de côté et affichée à la fin de la prochaine exécution de l'agent principal.
-- Si le modèle omet, duplique ou altère un marqueur de code, la réponse est retraduite une fois à partir du texte original dans le même délai de 60 s. Si cette tentative échoue aussi, un avertissement s'affiche et aucune traduction n'est publiée.
+- Le délai de 60 s est partagé avec une nouvelle tentative (voir Nouvelles tentatives). Si cette tentative échoue aussi, un avertissement s'affiche et aucune traduction n'est publiée.
 - Les traductions en attente ou mises de côté sont abandonnées lors d'un changement de session, d'une création de branche ou de l'arrêt. Un résultat identique à l'original (déjà dans la langue cible) n'est pas affiché.
 - La réponse originale reste intacte dans la transcription, le fichier de session et les futures requêtes au LLM. La traduction est un message personnalisé distinct (`display: true`, `customType: "omp-translate"`) que l'hôte enregistre dans la session et réaffiche à la reprise.
 - Le plugin exclut toujours ces messages du contexte envoyé au fournisseur, même lorsque `answer` est désactivé. Cette exclusion ne fonctionne que si le plugin est chargé : ne le désactivez pas lorsque vous reprenez des sessions contenant des réponses traduites, sinon l'hôte enverra ces messages au modèle.
@@ -150,9 +150,16 @@ Les étiquettes de langue sont stockées sous forme canonique. Si vous modifiez 
 ### Préservation du code
 
 - Les blocs de code délimités et le code en ligne sont remplacés par des espaces réservés avant la traduction, puis restaurés à l'octet près ensuite.
-- Si le modèle supprime ou duplique un espace réservé, la traduction est rejetée. Pour les prompts, le texte original est envoyé. Pour la réflexion, un échec est affiché.
+- Si le modèle supprime ou duplique un espace réservé, la traduction est rejetée et retentée une fois (voir Nouvelles tentatives). Si la nouvelle tentative est également rejetée : pour les prompts, le texte original est envoyé ; pour la réflexion, un échec est affiché ; pour les réponses, un avertissement s'affiche et aucune traduction n'est publiée.
 - Les autres identifiants et chemins ne sont protégés que par des instructions données au modèle. Une préservation parfaite et une équivalence sémantique ne sont pas garanties.
 - Le texte source est encadré par des consignes indiquant au modèle de le traiter comme un texte à traduire. Cet encadrement est une indication, pas une frontière de sécurité.
+
+### Nouvelles tentatives
+
+- Chaque traduction (réflexion, réponse, prompt) est tentée au plus deux fois dans un seul délai partagé (20 s ; 60 s pour les réponses). Une nouvelle tentative renvoie le texte original.
+- Une nouvelle tentative a lieu lorsqu'un espace réservé de code est manquant ou dupliqué, ou lorsque la sortie contient des lettres d'une écriture qui n'appartient pas à la langue cible. Les lettres latines sont toujours acceptées (identifiants, chemins, termes anglais) ; les caractères Han sont acceptés pour les cibles coréenne, japonaise et chinoise, les kana pour le japonais et le bopomofo pour le chinois. Exemple : une traduction anglaise qui contient encore un message de commit en coréen est retentée.
+- La nouvelle tentative liée à la langue ajoute une consigne demandant de traduire aussi le texte entre guillemets, les titres et les messages de commit. Des deux résultats, celui qui contient le moins de lettres d'une écriture étrangère est affiché ; si la nouvelle tentative échoue ou dépasse le délai, le premier résultat est utilisé.
+- La vérification repose uniquement sur l'écriture. Une sortie dans la mauvaise langue mais dans la même écriture (espagnol au lieu d'anglais, ou anglais non traduit lorsque la cible est le coréen) n'est pas détectée. Les langues dont l'écriture ne peut pas être déduite de l'étiquette ne sont pas vérifiées.
 
 ## Confidentialité et coût
 

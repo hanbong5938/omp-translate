@@ -7,7 +7,7 @@ import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ExtensionMode } from "@oh-my-pi/pi-coding-agent";
 import { createTranslateExtension } from "../src/index.ts";
 import type { TranslationSettings } from "../src/settings.ts";
-import type { ModelCall } from "../src/translation.ts";
+import { LANGUAGE_RETRY_HINT, type ModelCall } from "../src/translation.ts";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -580,6 +580,21 @@ describe("prompt translation", () => {
 			text: "Please fix this bug",
 		});
 	});
+
+	test("retries a prompt translation that leaks a foreign script and submits the retry", async () => {
+		const { extension, session } = await startPromptSession();
+		const responses = [
+			"Run the commit: perf(test): 통합 테스트 실행시간 단축",
+			"Run the commit: perf(test): shorten integration test runtime",
+		];
+		extension.respond = () => Promise.resolve(responses[extension.calls.length - 1] ?? "unexpected");
+
+		expect(await extension.pi.emit("input", inputEvent("コミットを実行してください"), session.ctx)).toEqual({
+			text: "Run the commit: perf(test): shorten integration test runtime",
+		});
+		expect(extension.calls).toHaveLength(2);
+		expect(extension.calls[1]?.systemPrompt).toEndWith(LANGUAGE_RETRY_HINT);
+	});
 });
 
 describe("/translate command", () => {
@@ -958,6 +973,19 @@ describe("answer translation", () => {
 		expect(session.notifications.filter(n => n.message.startsWith("Answer translation failed"))).toEqual([]);
 	});
 
+	test("posts the first answer when the language retry fails, without warning", async () => {
+		const { extension, session } = await answerSession();
+		extension.respond = () =>
+			extension.calls.length === 1 ? Promise.resolve("빌드가 성공했습니다.") : Promise.reject(new Error("retry failed"));
+
+		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
+		await settle();
+
+		expect(extension.calls).toHaveLength(2);
+		expect(extension.pi.sent).toEqual([answerPost("빌드가 성공했습니다.")]);
+		expect(session.notifications.filter(n => n.type === "warning")).toEqual([]);
+	});
+
 	describe("provider context", () => {
 		const contextMessages = () => [
 			userMessage("go"),
@@ -1165,6 +1193,18 @@ describe("reasoning refusal fallback", () => {
 		await extension.pi.emit("agent_end", agentEnd(finalAnswer("Build passed.")), session.ctx);
 		expect(extension.calls.map(call => call.text)).toEqual(["First thought.", "Second thought."]);
 		expect(extension.pi.sent).toEqual([thinkingPost("次の考え。")]);
+	});
+
+	test("retries a thinking translation in the wrong script and posts the retry", async () => {
+		const { extension, session } = await thinkingSession();
+		extension.respond = () =>
+			Promise.resolve(extension.calls.length === 1 ? "먼저 설정을 확인해야 한다." : "まず設定を確認するべきだ。");
+
+		expect(await completeThinking(extension, session, "I should check the config first.")).toEqual(
+			thinkingPost("まず設定を確認するべきだ。"),
+		);
+		expect(extension.calls).toHaveLength(2);
+		expect(extension.calls[1]?.systemPrompt).toEndWith(LANGUAGE_RETRY_HINT);
 	});
 });
 
@@ -2105,7 +2145,7 @@ describe("thinking failures and recovery", () => {
 			respond: () => Promise.resolve("Ejecuta las pruebas antes de confirmar."),
 			cause: "code marker",
 			recovery: "language ko",
-			providerCalls: 1,
+			providerCalls: 2,
 		},
 		{
 			name: "unresolved model",
